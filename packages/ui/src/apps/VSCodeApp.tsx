@@ -16,6 +16,7 @@ import type { RuntimeAPIs } from '@/lib/api/types';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
+import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -41,6 +42,7 @@ export function VSCodeApp({ apis }: VSCodeAppProps) {
   const clearError = useSessionUIStore((state) => state.clearError);
   const wideChatLayoutEnabled = useUIStore((state) => state.wideChatLayoutEnabled);
   const refreshGitHubAuthStatus = useGitHubAuthStore((state) => state.refreshStatus);
+  const refreshAzureDevOpsAuthStatus = useAzureDevOpsAuthStore((state) => state.refreshStatus);
   const setPlanModeEnabled = useFeatureFlagsStore((state) => state.setPlanModeEnabled);
   const panelType = typeof window !== 'undefined'
     ? window.__OPENCHAMBER_PANEL_TYPE__
@@ -65,7 +67,8 @@ export function VSCodeApp({ apis }: VSCodeAppProps) {
 
   React.useEffect(() => {
     void refreshGitHubAuthStatus(apis.github, { force: true });
-  }, [apis.github, refreshGitHubAuthStatus]);
+    void refreshAzureDevOpsAuthStatus(apis.azureDevOps, { force: true });
+  }, [apis.azureDevOps, apis.github, refreshAzureDevOpsAuthStatus, refreshGitHubAuthStatus]);
 
   React.useEffect(() => {
     let cancelled = false;

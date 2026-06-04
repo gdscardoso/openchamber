@@ -47,7 +47,7 @@ type PrRuntimeParams = {
   branch: string;
   remoteName: string | null;
   canShow: boolean;
-  github?: RuntimeAPIs['github'];
+  github?: RuntimeAPIs['github'] | RuntimeAPIs['azureDevOps'];
   githubAuthChecked: boolean;
   githubConnected: boolean | null;
 };
@@ -653,7 +653,13 @@ export type PrVisualSummary = {
   checks: { state: string; total: number; success: number; failure: number; pending: number } | null;
   canMerge: boolean | null;
   mergeableState: string | null;
-  repo: { owner: string; repo: string } | null;
+  repo: { owner?: string; repo: string; organization?: string; project?: string | null } | null;
+};
+
+const deriveRepoSummary = (repo: GitHubPullRequestStatus['repo']): PrVisualSummary['repo'] => {
+  if (!repo) return null;
+  if ('owner' in repo) return { owner: repo.owner, repo: repo.repo };
+  return { organization: repo.organization, project: repo.project, repo: repo.repo };
 };
 
 const derivePrVisualState = (status: GitHubPullRequestStatus | null): string | null => {
@@ -687,12 +693,12 @@ const deriveSummary = (entry: PrStatusEntry): PrVisualSummary | null => {
       : null,
     canMerge: typeof entry.status?.canMerge === 'boolean' ? entry.status.canMerge : null,
     mergeableState: typeof pr.mergeableState === 'string' ? pr.mergeableState : null,
-    repo: entry.status?.repo ? { owner: entry.status.repo.owner, repo: entry.status.repo.repo } : null,
+    repo: deriveRepoSummary(entry.status?.repo ?? null),
   };
 };
 
 const summarySignature = (s: PrVisualSummary): string =>
-  `${s.number}:${s.visualState}:${s.prState}:${s.draft}:${s.title ?? ''}:${s.url ?? ''}:${s.base ?? ''}:${s.head ?? ''}:${s.canMerge ?? ''}:${s.mergeableState ?? ''}:${s.checks?.state ?? ''}:${s.checks?.total ?? ''}:${s.checks?.success ?? ''}:${s.checks?.failure ?? ''}:${s.checks?.pending ?? ''}:${s.repo?.owner ?? ''}:${s.repo?.repo ?? ''}`;
+  `${s.number}:${s.visualState}:${s.prState}:${s.draft}:${s.title ?? ''}:${s.url ?? ''}:${s.base ?? ''}:${s.head ?? ''}:${s.canMerge ?? ''}:${s.mergeableState ?? ''}:${s.checks?.state ?? ''}:${s.checks?.total ?? ''}:${s.checks?.success ?? ''}:${s.checks?.failure ?? ''}:${s.checks?.pending ?? ''}:${s.repo?.owner ?? ''}:${s.repo?.organization ?? ''}:${s.repo?.project ?? ''}:${s.repo?.repo ?? ''}`;
 
 let prKeyedCacheSigs = new Map<string, string>();
 let prKeyedCacheResult: Map<string, PrVisualSummary> = new Map();

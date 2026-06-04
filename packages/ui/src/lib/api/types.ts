@@ -787,10 +787,24 @@ export type GitHubUserSummary = {
   email?: string;
 };
 
+export type GitProviderId = 'github' | 'azure-devops';
+
 export type GitHubRepoRef = {
+  provider?: GitProviderId;
   owner: string;
   repo: string;
   url: string;
+};
+
+export type AzureDevOpsRepoRef = {
+  provider: 'azure-devops';
+  organization: string;
+  project: string | null;
+  repo: string;
+  repositoryId?: string;
+  url: string;
+  webUrl: string;
+  defaultBranch?: string | null;
 };
 
 export type GitHubChecksSummary = {
@@ -843,6 +857,7 @@ export type GitHubCheckRun = {
 };
 
 export type GitHubPullRequest = {
+  provider?: GitProviderId;
   number: number;
   title: string;
   body?: string;
@@ -917,7 +932,8 @@ export type GitHubPullRequestContextResult = {
 
 export type GitHubPullRequestStatus = {
   connected: boolean;
-  repo?: GitHubRepoRef | null;
+  provider?: GitProviderId;
+  repo?: GitHubRepoRef | AzureDevOpsRepoRef | null;
   branch?: string;
   pr?: GitHubPullRequest | null;
   checks?: GitHubChecksSummary | null;
@@ -946,6 +962,7 @@ export type GitHubPullRequestUpdateInput = {
   number: number;
   title: string;
   body?: string;
+  remote?: string;
 };
 
 export type GitHubPullRequestMergeInput = {
@@ -1037,6 +1054,35 @@ export type GitHubAuthStatus = {
   accounts?: GitHubAuthAccount[];
 };
 
+export type AzureDevOpsUserSummary = {
+  login: string;
+  id?: string;
+  name?: string;
+  email?: string;
+};
+
+export type AzureDevOpsAuthAccount = {
+  id: string;
+  organization: string;
+  label?: string;
+  user?: AzureDevOpsUserSummary | null;
+  current?: boolean;
+};
+
+export type AzureDevOpsAuthStatus = {
+  connected: boolean;
+  organization?: string;
+  label?: string;
+  user?: AzureDevOpsUserSummary | null;
+  accounts?: AzureDevOpsAuthAccount[];
+};
+
+export type AzureDevOpsConnectInput = {
+  organization: string;
+  pat: string;
+  label?: string;
+};
+
 export type GitHubAuthAccount = {
   id: string;
   user: GitHubUserSummary;
@@ -1076,7 +1122,7 @@ export interface GitHubAPI {
   prContext(
     directory: string,
     number: number,
-    options?: { includeDiff?: boolean; includeCheckDetails?: boolean; sourceRepo?: GitHubRepoSelector | null }
+    options?: { includeDiff?: boolean; includeCheckDetails?: boolean; sourceRepo?: GitHubRepoSelector | null; remote?: string | null }
   ): Promise<GitHubPullRequestContextResult>;
 
   issuesList(directory: string, options?: { page?: number }): Promise<GitHubIssuesListResult>;
@@ -1084,6 +1130,22 @@ export interface GitHubAPI {
   issueComments(directory: string, number: number, options?: { sourceRepo?: GitHubRepoSelector | null }): Promise<GitHubIssueCommentsResult>;
   repoUpstream(directory: string): Promise<GitHubRepoUpstreamResult>;
   repoBranches(owner: string, repo: string): Promise<string[]>;
+}
+
+export interface AzureDevOpsAPI {
+  authStatus(): Promise<AzureDevOpsAuthStatus>;
+  authConnect(payload: AzureDevOpsConnectInput): Promise<AzureDevOpsAuthStatus>;
+  authDisconnect(): Promise<{ removed: boolean }>;
+  authActivate(accountId: string): Promise<AzureDevOpsAuthStatus>;
+  me?(): Promise<AzureDevOpsUserSummary>;
+  prStatus(directory: string, branch: string, remote?: string, options?: { force?: boolean }): Promise<GitHubPullRequestStatus>;
+  prCreate(payload: GitHubPullRequestCreateInput): Promise<GitHubPullRequest>;
+  prUpdate(payload: GitHubPullRequestUpdateInput): Promise<GitHubPullRequest>;
+  prContext(
+    directory: string,
+    number: number,
+    options?: { includeDiff?: boolean; includeCheckDetails?: boolean; remote?: string | null }
+  ): Promise<GitHubPullRequestContextResult>;
 }
 
 export interface RemoteClientRecord {
@@ -1126,6 +1188,7 @@ export interface RuntimeAPIs {
   permissions: PermissionsAPI;
   notifications: NotificationsAPI;
   github?: GitHubAPI;
+  azureDevOps?: AzureDevOpsAPI;
   push?: PushAPI;
   diagnostics?: DiagnosticsAPI;
   clientAuth?: ClientAuthAPI;

@@ -33,11 +33,13 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
+import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { getGitHubPrStatusKey, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import type {
   GitHubPullRequest,
   GitHubCheckRun,
   GitHubAPI,
+  AzureDevOpsAPI,
   GitHubPullRequestContextResult,
   GitHubPullRequestStatus,
   GitRemote,
@@ -199,6 +201,11 @@ const pickInitialPrRemote = (
 
 const isEphemeralPrRemote = (name: string): boolean => name.startsWith('pr-');
 
+const isAzureDevOpsRemote = (remote: GitRemote | null | undefined): boolean => {
+  const url = `${remote?.fetchUrl || ''} ${remote?.pushUrl || ''}`.toLowerCase();
+  return url.includes('dev.azure.com') || url.includes('visualstudio.com') || url.includes('ssh.dev.azure.com');
+};
+
 const rankRemotesForAutoSelect = (
   remotes: GitRemote[],
   trackingBranch?: string,
@@ -311,9 +318,11 @@ export const PullRequestSection: React.FC<{
 }> = ({ directory, branch, baseBranch, trackingBranch, remotes = [], remoteBranches = [], onGeneratedDescription }) => {
   const { t } = useI18n();
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
-  const { github } = useRuntimeAPIs();
+  const { github, azureDevOps } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
+  const azureDevOpsAuthStatus = useAzureDevOpsAuthStore((state) => state.status);
+  const azureDevOpsAuthChecked = useAzureDevOpsAuthStore((state) => state.hasChecked);
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
@@ -370,8 +379,14 @@ export const PullRequestSection: React.FC<{
       trackingBranch,
     })
   );
+  const selectedProvider = isAzureDevOpsRemote(selectedRemote) ? 'azure-devops' : 'github';
+  const isAzureDevOpsProvider = selectedProvider === 'azure-devops';
+  const prProviderApi: GitHubAPI | AzureDevOpsAPI | undefined = isAzureDevOpsProvider ? azureDevOps : github;
+  const providerAuthChecked = isAzureDevOpsProvider ? azureDevOpsAuthChecked : githubAuthChecked;
+  const providerConnected = isAzureDevOpsProvider ? azureDevOpsAuthStatus?.connected : githubAuthStatus?.connected;
+  const providerName = isAzureDevOpsProvider ? 'Azure DevOps' : 'GitHub';
   const [useDetectedUpstream, setUseDetectedUpstream] = React.useState(false);
-  const { detectedUpstream, upstreamBranches } = useDetectedUpstreamRepo(directory, github);
+  const { detectedUpstream, upstreamBranches } = useDetectedUpstreamRepo(directory, isAzureDevOpsProvider ? undefined : github);
 
   React.useEffect(() => {
     setUseDetectedUpstream(false);
@@ -413,13 +428,14 @@ export const PullRequestSection: React.FC<{
       }
     }
 
+    const hasResolvedBranchOptions = unique.size > 0;
     const defaultBase = normalizeBranchRef(baseBranch);
-    if (defaultBase && defaultBase !== 'HEAD') {
+    if (!hasResolvedBranchOptions && defaultBase && defaultBase !== 'HEAD') {
       unique.add(defaultBase);
     }
 
     const currentTarget = normalizeBranchRef(targetBaseBranch);
-    if (currentTarget && currentTarget !== 'HEAD') {
+    if (!hasResolvedBranchOptions && currentTarget && currentTarget !== 'HEAD') {
       unique.add(currentTarget);
     }
 
@@ -447,8 +463,16 @@ export const PullRequestSection: React.FC<{
 
   React.useEffect(() => {
     const normalizedBase = normalizeBranchRef(baseBranch);
-    if (!targetBaseBranch && normalizedBase) {
-      setTargetBaseBranch(normalizedBase);
+    const fallbackBaseBranch = availableBaseBranches.includes(normalizedBase)
+      ? normalizedBase
+      : availableBaseBranches.includes('master')
+        ? 'master'
+        : availableBaseBranches.includes('main')
+          ? 'main'
+          : availableBaseBranches[0];
+
+    if (!targetBaseBranch && fallbackBaseBranch) {
+      setTargetBaseBranch(fallbackBaseBranch);
       return;
     }
 
@@ -457,9 +481,7 @@ export const PullRequestSection: React.FC<{
     }
 
     if (!availableBaseBranches.includes(targetBaseBranch)) {
-      const fallback = availableBaseBranches.includes(normalizedBase)
-        ? normalizedBase
-        : availableBaseBranches[0];
+      const fallback = fallbackBaseBranch;
       if (fallback) {
         setTargetBaseBranch(fallback);
       }
@@ -501,7 +523,7 @@ export const PullRequestSection: React.FC<{
   );
 
   React.useEffect(() => {
-    if (!github?.prContext || !pr) {
+    if (!prProviderApi?.prContext || !pr) {
       return;
     }
 
@@ -517,7 +539,7 @@ export const PullRequestSection: React.FC<{
     setHydratingPrBodyKey(hydrationKey);
 
     let cancelled = false;
-    void github.prContext(directory, pr.number, { includeDiff: false, includeCheckDetails: false })
+    void prProviderApi.prContext(directory, pr.number, { includeDiff: false, includeCheckDetails: false, remote: selectedRemote?.name ?? null })
       .then((ctx) => {
         if (cancelled) {
           return;
@@ -550,7 +572,7 @@ export const PullRequestSection: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [directory, github, pr, prStatusKey, updatePrStatus]);
+  }, [directory, pr, prProviderApi, prStatusKey, selectedRemote?.name, updatePrStatus]);
 
   React.useEffect(() => {
     if (!pr) {
@@ -577,7 +599,7 @@ export const PullRequestSection: React.FC<{
   }, [isEditingPr, pr]);
 
   const openChecksDialog = React.useCallback(async () => {
-    if (!github?.prContext) {
+    if (!prProviderApi?.prContext) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
@@ -587,9 +609,10 @@ export const PullRequestSection: React.FC<{
     setExpandedCheckStepKeys(new Set());
     setIsLoadingCheckDetails(true);
     try {
-      const ctx = await github.prContext(directory, pr.number, {
+      const ctx = await prProviderApi.prContext(directory, pr.number, {
         includeDiff: false,
         includeCheckDetails: true,
+        remote: selectedRemote?.name ?? null,
       });
       setCheckDetails(ctx);
     } catch (e) {
@@ -598,10 +621,10 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsLoadingCheckDetails(false);
     }
-  }, [directory, github, pr, t]);
+  }, [directory, pr, prProviderApi, selectedRemote?.name, t]);
 
   const openCommentsDialog = React.useCallback(async () => {
-    if (!github?.prContext) {
+    if (!prProviderApi?.prContext) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
@@ -610,9 +633,10 @@ export const PullRequestSection: React.FC<{
     setCommentsDialogOpen(true);
     setIsLoadingCommentsDetails(true);
     try {
-      const ctx = await github.prContext(directory, pr.number, {
+      const ctx = await prProviderApi.prContext(directory, pr.number, {
         includeDiff: false,
         includeCheckDetails: false,
+        remote: selectedRemote?.name ?? null,
       });
       setCommentsDetails(ctx);
     } catch (e) {
@@ -621,7 +645,7 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsLoadingCommentsDetails(false);
     }
-  }, [directory, github, pr, t]);
+  }, [directory, pr, prProviderApi, selectedRemote?.name, t]);
 
   const formatTimestamp = React.useCallback((value?: string) => {
     if (!value) return '';
@@ -875,7 +899,7 @@ export const PullRequestSection: React.FC<{
   const sendFailedChecksToChat = React.useCallback(async () => {
     setActiveMainTab('chat');
 
-    if (!github?.prContext) {
+    if (!prProviderApi?.prContext) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
@@ -886,7 +910,7 @@ export const PullRequestSection: React.FC<{
     }
 
     try {
-      const context = await github.prContext(directory, pr.number, { includeDiff: false, includeCheckDetails: true });
+      const context = await prProviderApi.prContext(directory, pr.number, { includeDiff: false, includeCheckDetails: true, remote: selectedRemote?.name ?? null });
       const runs = context.checkRuns ?? [];
       const failed = runs.filter((r) => {
         const conclusion = typeof r.conclusion === 'string' ? r.conclusion.toLowerCase() : '';
@@ -926,12 +950,12 @@ export const PullRequestSection: React.FC<{
       const message = e instanceof Error ? e.message : String(e);
       toast.error(t('gitView.pr.toast.loadChecksFailed'), { description: message });
     }
-  }, [directory, dispatchSyntheticPrompt, github, pr, resolveChatDispatchTarget, setActiveMainTab, t]);
+  }, [directory, dispatchSyntheticPrompt, pr, prProviderApi, resolveChatDispatchTarget, selectedRemote?.name, setActiveMainTab, t]);
 
   const sendCommentsToChat = React.useCallback(async () => {
     setActiveMainTab('chat');
 
-    if (!github?.prContext) {
+    if (!prProviderApi?.prContext) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
@@ -942,7 +966,7 @@ export const PullRequestSection: React.FC<{
     }
 
     try {
-      const context = await github.prContext(directory, pr.number, { includeDiff: false, includeCheckDetails: false });
+      const context = await prProviderApi.prContext(directory, pr.number, { includeDiff: false, includeCheckDetails: false, remote: selectedRemote?.name ?? null });
       const issueComments = context.issueComments ?? [];
       const reviewComments = context.reviewComments ?? [];
       const total = issueComments.length + reviewComments.length;
@@ -953,7 +977,7 @@ export const PullRequestSection: React.FC<{
 
       const visibleText = await renderMagicPrompt('github.pr.comments.review.visible');
       const instructionsText = await renderMagicPrompt('github.pr.comments.review.instructions');
-      const payloadText = `GitHub PR comments (JSON)\n${JSON.stringify({
+      const payloadText = `${isAzureDevOpsProvider ? 'Azure DevOps' : 'GitHub'} PR comments (JSON)\n${JSON.stringify({
         repo: context.repo ?? null,
         pr: context.pr ?? null,
         issueComments,
@@ -965,7 +989,7 @@ export const PullRequestSection: React.FC<{
       const message = e instanceof Error ? e.message : String(e);
       toast.error(t('gitView.pr.toast.loadPrCommentsFailed'), { description: message });
     }
-  }, [directory, dispatchSyntheticPrompt, github, pr, resolveChatDispatchTarget, setActiveMainTab, t]);
+  }, [directory, dispatchSyntheticPrompt, isAzureDevOpsProvider, pr, prProviderApi, resolveChatDispatchTarget, selectedRemote?.name, setActiveMainTab, t]);
 
   const sendSingleCommentToChat = React.useCallback(async (comment: TimelineCommentItem) => {
     setCommentsDialogOpen(false);
@@ -1001,7 +1025,7 @@ export const PullRequestSection: React.FC<{
   }, [refresh]);
 
   React.useEffect(() => {
-    if (!github?.prStatus || !canShow || remotes.length <= 1) {
+    if (!prProviderApi?.prStatus || !canShow || remotes.length <= 1) {
       return;
     }
     if (didUserOverrideRemoteRef.current) {
@@ -1030,7 +1054,7 @@ export const PullRequestSection: React.FC<{
           return;
         }
         try {
-          const next = await github.prStatus(directory, branch, candidate.name);
+          const next = await prProviderApi.prStatus(directory, branch, candidate.name);
           if (!next?.pr) {
             continue;
           }
@@ -1049,7 +1073,7 @@ export const PullRequestSection: React.FC<{
     return () => {
       cancelled = true;
     };
-  }, [branch, canShow, directory, github, remotes, selectedRemote?.name, snapshotKey, status?.pr, trackingBranch]);
+  }, [branch, canShow, directory, prProviderApi, remotes, selectedRemote?.name, snapshotKey, status?.pr, trackingBranch]);
 
   React.useEffect(() => {
     ensurePrStatusEntry(prStatusKey);
@@ -1058,18 +1082,18 @@ export const PullRequestSection: React.FC<{
       branch,
       remoteName: selectedRemote?.name ?? null,
       canShow,
-      github,
-      githubAuthChecked,
-      githubConnected: githubAuthStatus?.connected ?? null,
+      github: prProviderApi,
+      githubAuthChecked: providerAuthChecked,
+      githubConnected: providerConnected ?? null,
     });
   }, [
     branch,
     canShow,
     directory,
     ensurePrStatusEntry,
-    github,
-    githubAuthChecked,
-    githubAuthStatus?.connected,
+    prProviderApi,
+    providerAuthChecked,
+    providerConnected,
     prStatusKey,
     selectedRemote?.name,
     setPrStatusParams,
@@ -1146,10 +1170,10 @@ export const PullRequestSection: React.FC<{
   }, [refresh, status?.pr?.state, statusEntry?.lastRefreshAt]);
 
   React.useEffect(() => {
-    if (githubAuthChecked && githubAuthStatus?.connected === false) {
+    if (providerAuthChecked && providerConnected === false) {
       void refresh({ force: true, silent: true, markInitialResolved: true });
     }
-  }, [githubAuthChecked, githubAuthStatus, refresh]);
+  }, [providerAuthChecked, providerConnected, refresh]);
 
   React.useEffect(() => {
     if (!directory || !branch) {
@@ -1211,7 +1235,7 @@ export const PullRequestSection: React.FC<{
   }, [additionalContext, branch, detectedUpstream?.defaultBranchSha, directory, isGenerating, onGeneratedDescription, targetBaseBranch, t, useDetectedUpstream]);
 
   const createPr = React.useCallback(async () => {
-    if (!github?.prCreate) {
+    if (!prProviderApi?.prCreate) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
@@ -1237,7 +1261,7 @@ export const PullRequestSection: React.FC<{
 
       const usingDetectedUpstream = useDetectedUpstream && detectedUpstream;
 
-      const pr = await github.prCreate({
+      const pr = await prProviderApi.prCreate({
         directory,
         title: trimmedTitle,
         head: branch,
@@ -1248,7 +1272,7 @@ export const PullRequestSection: React.FC<{
           ? { targetRepo: { owner: detectedUpstream.owner, repo: detectedUpstream.repo }, headRemote: 'origin' }
           : {
               ...(selectedRemote ? { remote: selectedRemote.name } : {}),
-              ...(trackingRemoteName && trackingRemoteName !== selectedRemote?.name
+              ...(!isAzureDevOpsProvider && trackingRemoteName && trackingRemoteName !== selectedRemote?.name
                 ? { headRemote: trackingRemoteName }
                 : {}),
             }),
@@ -1263,7 +1287,7 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsCreating(false);
     }
-  }, [body, branch, detectedUpstream, directory, draft, github, prStatusKey, refresh, scheduleActionRefresh, selectedRemote, targetBaseBranch, title, trackingBranch, updatePrStatus, useDetectedUpstream, t]);
+  }, [body, branch, detectedUpstream, directory, draft, isAzureDevOpsProvider, prProviderApi, prStatusKey, refresh, scheduleActionRefresh, selectedRemote, targetBaseBranch, title, trackingBranch, updatePrStatus, useDetectedUpstream, t]);
 
   const mergePr = React.useCallback(async (pr: GitHubPullRequest) => {
     if (!github?.prMerge) {
@@ -1314,7 +1338,7 @@ export const PullRequestSection: React.FC<{
   }, [directory, github, refresh, scheduleActionRefresh, t]);
 
   const updatePr = React.useCallback(async (pr: GitHubPullRequest) => {
-    if (!github?.prUpdate) {
+    if (!prProviderApi?.prUpdate) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
@@ -1327,11 +1351,12 @@ export const PullRequestSection: React.FC<{
 
     setIsUpdating(true);
     try {
-      const updated = await github.prUpdate({
+      const updated = await prProviderApi.prUpdate({
         directory,
         number: pr.number,
         title: trimmedTitle,
         body: editBody,
+        remote: selectedRemote?.name ?? undefined,
       });
       updatePrStatus(prStatusKey, (prev) => (prev
         ? {
@@ -1352,7 +1377,7 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsUpdating(false);
     }
-  }, [directory, editBody, editTitle, github, prStatusKey, refresh, scheduleActionRefresh, updatePrStatus, t]);
+  }, [directory, editBody, editTitle, prProviderApi, prStatusKey, refresh, scheduleActionRefresh, selectedRemote?.name, updatePrStatus, t]);
 
   if (!canShow) {
     return (
@@ -1372,7 +1397,8 @@ export const PullRequestSection: React.FC<{
   const checks = status?.checks ?? null;
   const canMerge = Boolean(status?.canMerge);
   const isConnected = Boolean(status?.connected);
-  const shouldShowConnectionNotice = githubAuthChecked && status?.connected === false;
+  const shouldShowConnectionNotice = providerAuthChecked && status?.connected === false;
+  const terminalPr = pr && pr.state !== 'open' ? pr : null;
   const prVisualState = getPrVisualState(status);
   const prColorVar = prVisualState ? `var(--pr-${prVisualState})` : 'var(--status-info)';
   const prStateIconName = prVisualState === 'draft'
@@ -1412,12 +1438,12 @@ export const PullRequestSection: React.FC<{
                     type="button"
                     className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background/70 hover:bg-interactive-hover/60"
                     onClick={() => void openExternal(pr.url)}
-                    aria-label={t('gitView.pr.actions.openOnGitHubAria')}
+                    aria-label={t('gitView.pr.actions.openOnProviderAria', { provider: providerName })}
                   >
                     <Icon name={prStateIconName} className="size-4 shrink-0" style={{ color: prColorVar }} />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent><p>{t('gitView.pr.actions.openOnGitHub')}</p></TooltipContent>
+                <TooltipContent><p>{t('gitView.pr.actions.openOnProvider', { provider: providerName })}</p></TooltipContent>
               </Tooltip>
             ) : (
               <Icon name={prStateIconName} className="size-4 shrink-0" style={{ color: 'var(--surface-muted-foreground)' }} />
@@ -1468,7 +1494,7 @@ export const PullRequestSection: React.FC<{
         {shouldShowConnectionNotice ? (
           <div className="space-y-2">
               <div className="typography-meta text-muted-foreground">
-              {t('gitView.pr.githubNotConnected')}
+              {t('gitView.pr.providerNotConnected', { provider: providerName })}
             </div>
                 <Button variant="outline" size="sm" onClick={openGitHubSettings} className="w-fit">
                   {t('gitView.pr.actions.openSettings')}
@@ -1484,10 +1510,31 @@ export const PullRequestSection: React.FC<{
                   <Button variant="outline" size="sm" asChild className="w-fit">
                     <a href={repoUrl} target="_blank" rel="noopener noreferrer">
                       <Icon name="external-link" className="size-4" />
-                      Open Repo
+                      {t('gitView.pr.actions.openRepo')}
                     </a>
                   </Button>
                 ) : null}
+              </div>
+            ) : null}
+
+            {terminalPr ? (
+              <div className="rounded-lg border border-[var(--interactive-border)] bg-[var(--surface-elevated)]/60 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="typography-ui-label text-foreground truncate">
+                      {t('gitView.pr.numberLabel', { number: terminalPr.number })} · {terminalPr.state}
+                    </div>
+                    <div className="typography-meta text-muted-foreground truncate">{terminalPr.title}</div>
+                  </div>
+                  {terminalPr.url ? (
+                    <Button variant="outline" size="sm" asChild className="w-fit shrink-0">
+                      <a href={terminalPr.url} target="_blank" rel="noopener noreferrer">
+                        <Icon name="external-link" className="size-4" />
+                        {t('gitView.pr.actions.openOnProvider', { provider: providerName })}
+                      </a>
+                    </Button>
+                  ) : null}
+                </div>
               </div>
             ) : null}
 
@@ -1496,7 +1543,7 @@ export const PullRequestSection: React.FC<{
                 <Icon name="loader-4" className="size-4 animate-spin" />
                 {t('gitView.pr.checkingStatus')}
               </div>
-            ) : pr ? (
+            ) : pr && pr.state === 'open' ? (
               <div className="flex flex-col gap-2">
                 <div className="flex flex-col gap-3">
                   <div className="min-w-0">

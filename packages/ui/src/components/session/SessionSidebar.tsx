@@ -114,8 +114,10 @@ type PrIndicator = {
   canMerge: boolean | null;
   mergeableState: string | null;
   repo: {
-    owner: string;
+    owner?: string;
     repo: string;
+    organization?: string;
+    project?: string | null;
   } | null;
 };
 

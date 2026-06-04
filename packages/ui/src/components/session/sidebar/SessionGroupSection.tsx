@@ -89,8 +89,10 @@ type Props = {
     canMerge: boolean | null;
     mergeableState: string | null;
     repo: {
-      owner: string;
+      owner?: string;
       repo: string;
+      organization?: string;
+      project?: string | null;
     } | null;
   }>;
   onToggleCollapsedGroup: (groupKey: string) => void;

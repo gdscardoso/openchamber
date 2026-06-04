@@ -207,7 +207,7 @@ export const createWebGitHubAPI = ({ urls }: WebGitHubAPIOptions): GitHubAPI => 
   async prContext(
     directory: string,
     number: number,
-    options?: { includeDiff?: boolean; includeCheckDetails?: boolean; sourceRepo?: { owner: string; repo: string } | null }
+    options?: { includeDiff?: boolean; includeCheckDetails?: boolean; sourceRepo?: { owner: string; repo: string } | null; remote?: string | null }
   ): Promise<GitHubPullRequestContextResult> {
     const params = new URLSearchParams({ directory, number: String(number) });
     if (options?.includeDiff) {

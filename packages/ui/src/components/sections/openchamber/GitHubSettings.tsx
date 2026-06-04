@@ -9,8 +9,10 @@ import { cn } from '@/lib/utils';
 import { openExternalUrl } from '@/lib/url';
 import { useI18n } from '@/lib/i18n';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Input } from '@/components/ui/input';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { Icon } from "@/components/icon/Icon";
+import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 
 type GitHubUser = {
   login: string;
@@ -33,6 +35,25 @@ type DeviceFlowStartResponse = {
 type DeviceFlowCompleteResponse =
   | { connected: true; user: GitHubUser; scope?: string }
   | { connected: false; status?: string; error?: string };
+
+const normalizeAzureDevOpsOrganizationInput = (value: string): string => {
+  const raw = value.trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw);
+    const hostname = url.hostname.toLowerCase();
+    if (hostname === 'dev.azure.com') {
+      const organization = url.pathname.replace(/^\/+/, '').split('/')[0] || url.username;
+      return decodeURIComponent(organization || '').trim().toLowerCase();
+    }
+    if (hostname.endsWith('.visualstudio.com')) {
+      return hostname.slice(0, -'.visualstudio.com'.length).trim().toLowerCase();
+    }
+  } catch {
+    // Plain organization names are expected.
+  }
+  return raw.replace(/^dev\.azure\.com\//i, '').replace(/\.visualstudio\.com.*$/i, '').replace(/\/.*$/, '').trim().toLowerCase();
+};
 
 export const GitHubSettings: React.FC = () => {
   const { t } = useI18n();
@@ -241,6 +262,7 @@ export const GitHubSettings: React.FC = () => {
   const accounts = status?.accounts ?? [];
 
   return (
+    <>
     <div className="mb-8">
       <div className="mb-3 px-1 flex items-start justify-between gap-4">
         <div className="flex items-center gap-2">
@@ -412,6 +434,171 @@ export const GitHubSettings: React.FC = () => {
           </div>
         </div>
       )}
+    </div>
+    <AzureDevOpsSettings />
+    </>
+  );
+};
+
+const AzureDevOpsSettings: React.FC = () => {
+  const { t } = useI18n();
+  const { isMobile } = useDeviceInfo();
+  const runtimeAzureDevOps = getRegisteredRuntimeAPIs()?.azureDevOps;
+  const status = useAzureDevOpsAuthStore((state) => state.status);
+  const isLoading = useAzureDevOpsAuthStore((state) => state.isLoading);
+  const hasChecked = useAzureDevOpsAuthStore((state) => state.hasChecked);
+  const refreshStatus = useAzureDevOpsAuthStore((state) => state.refreshStatus);
+  const setStatus = useAzureDevOpsAuthStore((state) => state.setStatus);
+  const [organization, setOrganization] = React.useState('');
+  const [pat, setPat] = React.useState('');
+  const [label, setLabel] = React.useState('');
+  const [isBusy, setIsBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!hasChecked) {
+      void refreshStatus(runtimeAzureDevOps);
+    }
+  }, [hasChecked, refreshStatus, runtimeAzureDevOps]);
+
+  const connect = React.useCallback(async () => {
+    const trimmedOrganization = normalizeAzureDevOpsOrganizationInput(organization);
+    if (!trimmedOrganization || !pat.trim()) {
+      toast.error(t('settings.azureDevOps.page.toast.organizationAndPatRequired'));
+      return;
+    }
+    setIsBusy(true);
+    try {
+      const payload = await runtimeAzureDevOps!.authConnect({
+        organization: trimmedOrganization,
+        pat,
+        ...(label.trim() ? { label: label.trim() } : {}),
+      });
+      setStatus(payload);
+      setPat('');
+      toast.success(t('settings.azureDevOps.page.toast.connected'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(t('settings.azureDevOps.page.toast.connectFailed'), { description: message });
+    } finally {
+      setIsBusy(false);
+    }
+  }, [label, organization, pat, runtimeAzureDevOps, setStatus, t]);
+
+  const disconnect = React.useCallback(async () => {
+    setIsBusy(true);
+    try {
+      await runtimeAzureDevOps?.authDisconnect();
+      toast.success(t('settings.azureDevOps.page.toast.disconnected'));
+      await refreshStatus(runtimeAzureDevOps, { force: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(t('settings.azureDevOps.page.toast.disconnectFailed'), { description: message });
+    } finally {
+      setIsBusy(false);
+    }
+  }, [refreshStatus, runtimeAzureDevOps, t]);
+
+  const activateAccount = React.useCallback(async (accountId: string) => {
+    if (!accountId || !runtimeAzureDevOps?.authActivate) return;
+    setIsBusy(true);
+    try {
+      setStatus(await runtimeAzureDevOps.authActivate(accountId));
+      toast.success(t('settings.azureDevOps.page.toast.accountSwitched'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(t('settings.azureDevOps.page.toast.accountSwitchFailed'), { description: message });
+    } finally {
+      setIsBusy(false);
+    }
+  }, [runtimeAzureDevOps, setStatus, t]);
+
+  if (isLoading) return null;
+
+  const connected = Boolean(status?.connected);
+  const user = status?.user;
+  const accounts = status?.accounts ?? [];
+
+  return (
+    <div className="mb-8">
+      <div className="mb-3 px-1 flex items-start justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <h3 className="typography-ui-header font-semibold text-foreground">Azure DevOps</h3>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Icon name="information" className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
+            </TooltipTrigger>
+            <TooltipContent sideOffset={8} className="max-w-xs">
+              {t('settings.azureDevOps.page.tooltip.connectAccount')}
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+
+      <div className="rounded-lg bg-[var(--surface-elevated)]/70 overflow-hidden flex flex-col">
+        {connected ? (
+          <div className={cn('px-4 py-3', isMobile ? 'flex flex-col gap-3' : 'flex items-center justify-between gap-4')}>
+            <div className="min-w-0 flex-1">
+              <div className="typography-ui-label text-foreground truncate">
+                {user?.name?.trim() || user?.login || status?.label || status?.organization || 'Azure DevOps'}
+              </div>
+              <div className="typography-meta text-muted-foreground mt-0.5 truncate">
+                {status?.organization ? t('settings.azureDevOps.page.label.organization', { value: status.organization }) : t('settings.azureDevOps.page.label.connected')}
+              </div>
+            </div>
+            <Button size="sm" variant="outline" onClick={disconnect} disabled={isBusy} className={cn('text-[var(--status-error)] hover:text-[var(--status-error)]', isMobile ? 'w-full' : undefined)}>
+              {t('settings.github.page.actions.disconnect')}
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-3 px-4 py-4">
+            <div className="typography-meta text-muted-foreground">{t('settings.azureDevOps.page.status.notConnected')}</div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <label className="space-y-1">
+                <span className="typography-micro text-muted-foreground">{t('settings.azureDevOps.page.field.organizationPlaceholder')}</span>
+                <Input className="h-8" value={organization} onChange={(event) => setOrganization(event.target.value)} placeholder="verdecard" />
+              </label>
+              <label className="space-y-1">
+                <span className="typography-micro text-muted-foreground">{t('settings.azureDevOps.page.field.labelPlaceholder')}</span>
+                <Input className="h-8" value={label} onChange={(event) => setLabel(event.target.value)} placeholder="VerdeCard" />
+              </label>
+              <label className="space-y-1">
+                <span className="typography-micro text-muted-foreground">{t('settings.azureDevOps.page.field.patPlaceholder')}</span>
+                <Input className="h-8" type="password" value={pat} onChange={(event) => setPat(event.target.value)} placeholder={t('settings.azureDevOps.page.field.patPlaceholder')} />
+              </label>
+            </div>
+            <Button size="sm" variant="default" onClick={connect} disabled={isBusy || !runtimeAzureDevOps} className={cn(isMobile ? 'w-full' : 'w-fit')}>
+              {t('settings.azureDevOps.page.actions.connect')}
+            </Button>
+          </div>
+        )}
+
+        {accounts.length > 1 ? (
+          <div className="mt-2 border-t border-[var(--surface-subtle)] pt-2 px-2 pb-1">
+            <div className="typography-micro text-muted-foreground mb-2 px-1">
+              {t('settings.github.page.label.otherAccounts')}
+            </div>
+            <div className="space-y-1">
+              {accounts.map((account) => (
+                <div key={account.id} className="flex items-center justify-between gap-3 rounded-md border border-[var(--surface-subtle)] bg-[var(--surface-muted)] px-3 py-2">
+                  <div className="min-w-0">
+                    <div className="typography-ui-label text-foreground truncate">{account.label || account.organization}</div>
+                    <div className="typography-micro text-muted-foreground truncate">{account.organization}</div>
+                  </div>
+                  {account.current ? (
+                    <span className="typography-micro text-[var(--primary-base)] bg-[var(--primary-base)]/10 px-1.5 py-0.5 rounded">
+                      {t('settings.github.page.status.active')}
+                    </span>
+                  ) : (
+                    <Button size="sm" variant="ghost" onClick={() => activateAccount(account.id)} disabled={isBusy}>
+                      {t('settings.github.page.actions.switchTo')}
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 };
