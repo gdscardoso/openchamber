@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM oven/bun:1 AS base
+FROM oven/bun:1.3.6 AS base
 WORKDIR /app
 
 FROM base AS deps
@@ -7,8 +7,9 @@ WORKDIR /app
 COPY package.json bun.lock ./
 COPY packages/ui/package.json ./packages/ui/
 COPY packages/web/package.json ./packages/web/
-COPY packages/desktop/package.json ./packages/desktop/
 COPY packages/vscode/package.json ./packages/vscode/
+COPY packages/electron/package.json ./packages/electron/
+COPY patches ./patches
 RUN bun install --frozen-lockfile --ignore-scripts
 
 FROM deps AS builder
@@ -16,7 +17,7 @@ WORKDIR /app
 COPY . .
 RUN bun run build:web
 
-FROM oven/bun:1 AS runtime
+FROM oven/bun:1.3.6 AS runtime
 WORKDIR /home/openchamber
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -1749,7 +1749,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     icon: windowIconPath,
-    show: false,
+    show: isDev ? true : false,
     backgroundColor: '#151313',
     frame: process.platform === 'win32' ? false : undefined,
     autoHideMenuBar: autoHidesNativeMenuBar,
@@ -1915,11 +1915,6 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
     void shell.openExternal(url).catch(() => {});
   });
 
-  browserWindow.webContents.setZoomFactor(1);
-  browserWindow.webContents.on('zoom-changed', () => {
-    browserWindow.webContents.setZoomFactor(1);
-  });
-
   browserWindow.webContents.on('dom-ready', () => {
     const initScript = browserWindow.__ocInitScript || state.initScript;
     if (initScript) {
@@ -1928,7 +1923,6 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   });
 
   browserWindow.webContents.on('did-finish-load', () => {
-    browserWindow.webContents.setZoomFactor(1);
     if (state.mainWindow && browserWindow.id === state.mainWindow.id && pendingDeepLinks.length > 0) {
       const timer = setTimeout(flushPendingDeepLinks, 400);
       if (typeof timer?.unref === 'function') timer.unref();
@@ -3456,6 +3450,10 @@ const buildMacMenu = () => {
         { label: 'Dark Theme', click: () => dispatchAction('theme-dark') },
         { label: 'System Theme', click: () => dispatchAction('theme-system') },
         { type: 'separator' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { role: 'resetZoom' },
+        { type: 'separator' },
         { label: 'Toggle Session Sidebar', accelerator: 'Cmd+L', click: () => dispatchAction('toggle-sidebar') },
         { label: 'Toggle Memory Debug', accelerator: 'Cmd+Shift+D', click: () => dispatchAction('toggle-memory-debug') },
         { type: 'separator' },
@@ -3555,6 +3553,10 @@ const buildAutoHiddenMenu = () => {
         { label: 'Light Theme', click: () => dispatchAction('theme-light') },
         { label: 'Dark Theme', click: () => dispatchAction('theme-dark') },
         { label: 'System Theme', click: () => dispatchAction('theme-system') },
+        { type: 'separator' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { role: 'resetZoom' },
         { type: 'separator' },
         { label: 'Toggle Session Sidebar', accelerator: 'Ctrl+L', click: () => dispatchAction('toggle-sidebar') },
         { label: 'Toggle Memory Debug', accelerator: 'Ctrl+Shift+D', click: () => dispatchAction('toggle-memory-debug') },
