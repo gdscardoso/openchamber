@@ -43,6 +43,13 @@ export function createAzureDevOpsClient(auth = getAzureDevOpsAuth()) {
       error.data = data;
       throw error;
     }
+    if (options.includeHeaders) {
+      return {
+        data,
+        headers: response.headers,
+        status: response.status,
+      };
+    }
     return data;
   };
 

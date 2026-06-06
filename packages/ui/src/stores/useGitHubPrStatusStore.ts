@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import type { GitHubPullRequestStatus, RuntimeAPIs } from '@/lib/api/types';
+import type { AzureDevOpsAPI, GitHubAPI, GitHubPullRequestStatus } from '@/lib/api/types';
 import { mapWithConcurrency } from '@/lib/concurrency';
 import { getSafeStorage } from './utils/safeStorage';
 
@@ -24,7 +24,7 @@ const isPendingChecks = (status: GitHubPullRequestStatus | null): boolean => {
   return checks.state === 'pending' || checks.pending > 0;
 };
 
-export const getGitHubPrStatusKey = (directory: string, branch: string, remoteName?: string | null): string => {
+export const getGitPrStatusKey = (directory: string, branch: string, remoteName?: string | null): string => {
   void remoteName;
   return `${directory}::${branch}`;
 };
@@ -47,9 +47,9 @@ type PrRuntimeParams = {
   branch: string;
   remoteName: string | null;
   canShow: boolean;
-  github?: RuntimeAPIs['github'] | RuntimeAPIs['azureDevOps'];
-  githubAuthChecked: boolean;
-  githubConnected: boolean | null;
+  providerApi?: Pick<GitHubAPI, 'prStatus'> | Pick<AzureDevOpsAPI, 'prStatus'>;
+  providerAuthChecked: boolean;
+  providerConnected: boolean | null;
 };
 
 type PrEntryIdentity = {
@@ -76,7 +76,7 @@ type PersistedPrStatusEntry = Pick<
   'status' | 'isInitialStatusResolved' | 'lastRefreshAt' | 'lastDiscoveryPollAt' | 'identity' | 'resolvedRemoteName'
 >;
 
-type GitHubPrStatusStore = {
+type GitPrStatusStore = {
   entries: Record<string, PrStatusEntry>;
   activeRequestCount: number;
   totalRequestCount: number;
@@ -157,7 +157,7 @@ const mergeParams = (entry: PrStatusEntry, next: PrRuntimeParams): PrStatusEntry
 };
 
 const getFetchableParams = (entry: PrStatusEntry | null | undefined): PrRuntimeParams | null => {
-  if (!entry?.params?.canShow || !entry.params.github?.prStatus) {
+  if (!entry?.params?.canShow || !entry.params.providerApi?.prStatus) {
     return null;
   }
   return {
@@ -219,7 +219,7 @@ const hydrateEntry = (entry: PersistedPrStatusEntry | undefined): PrStatusEntry 
   resolvedRemoteName: entry?.resolvedRemoteName ?? entry?.status?.resolvedRemoteName ?? null,
 });
 
-export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
+export const useGitPrStatusStore = create<GitPrStatusStore>()(
   persist(
     (set, get) => ({
       entries: {},
@@ -434,7 +434,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
           };
         });
 
-        if (params.githubAuthChecked && params.githubConnected === false) {
+        if (params.providerAuthChecked && params.providerConnected === false) {
           set((prev) => {
             const nextEntries = { ...prev.entries };
             signatureKeys.forEach((signatureKey) => {
@@ -458,7 +458,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
           return;
         }
 
-        if (!params.github?.prStatus) {
+        if (!params.providerApi?.prStatus) {
           set((prev) => {
             const nextEntries = { ...prev.entries };
             signatureKeys.forEach((signatureKey) => {
@@ -469,7 +469,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
               nextEntries[signatureKey] = {
                 ...current,
                 status: null,
-                error: 'GitHub runtime API unavailable',
+                error: 'Git provider runtime API unavailable',
                 isLoading: options?.silent ? current.isLoading : false,
                 isInitialStatusResolved: options?.markInitialResolved === false ? current.isInitialStatusResolved : true,
               };
@@ -488,7 +488,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
             activeRequestCount: prev.activeRequestCount + 1,
             totalRequestCount: prev.totalRequestCount + 1,
           }));
-          const next = await params.github.prStatus(params.directory, params.branch, params.remoteName ?? undefined, { force: options?.force });
+          const next = await params.providerApi.prStatus(params.directory, params.branch, params.remoteName ?? undefined, { force: options?.force });
           set((prev) => {
             const nextEntries = { ...prev.entries };
             signatureKeys.forEach((signatureKey) => {
@@ -578,7 +578,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
               if (!directory || !branch) {
                 return null;
               }
-              return getGitHubPrStatusKey(directory, branch, target.remoteName ?? null);
+              return getGitPrStatusKey(directory, branch, target.remoteName ?? null);
             })
             .filter((key): key is string => Boolean(key)),
         ));
@@ -621,7 +621,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
       }),
       merge: (persistedState, currentState) => {
         const persistedEntries = (persistedState as { entries?: Record<string, PersistedPrStatusEntry> } | undefined)?.entries ?? {};
-        const current = currentState as GitHubPrStatusStore;
+        const current = currentState as GitPrStatusStore;
         return {
           ...current,
           entries: Object.fromEntries(
@@ -634,9 +634,9 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
 );
 
 export const usePrStatusForDirectoryBranch = (directory: string | null, branch: string | null) => {
-  return useGitHubPrStatusStore((state) => {
+  return useGitPrStatusStore((state) => {
     if (!directory || !branch) return null;
-    const key = getGitHubPrStatusKey(directory, branch);
+    const key = getGitPrStatusKey(directory, branch);
     return state.entries[key] ?? null;
   });
 };
@@ -704,7 +704,7 @@ let prKeyedCacheSigs = new Map<string, string>();
 let prKeyedCacheResult: Map<string, PrVisualSummary> = new Map();
 
 export const usePrVisualSummaryByKeys = (keys: string[]) => {
-  return useGitHubPrStatusStore((state) => {
+  return useGitPrStatusStore((state) => {
     // Derive summaries for requested keys only
     const nextSigs = new Map<string, string>();
     const nextSummaries = new Map<string, PrVisualSummary>();

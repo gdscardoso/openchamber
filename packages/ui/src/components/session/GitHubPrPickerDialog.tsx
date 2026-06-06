@@ -15,11 +15,13 @@ import { Icon } from "@/components/icon/Icon";
 import { cn } from '@/lib/utils';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { useDeviceInfo } from '@/lib/device';
-import type { GitHubPullRequestContextResult, GitHubPullRequestSummary, GitHubPullRequestsListResult, GitHubRepoSelector } from '@/lib/api/types';
+import type { GitHubPullRequestContextResult, GitHubPullRequestSummary, GitHubPullRequestsListResult, GitHubRepoSelector, GitProviderId, GitRemote } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
 
 const parsePrNumber = (value: string): number | null => {
@@ -41,8 +43,16 @@ const parsePrNumber = (value: string): number | null => {
   return null;
 };
 
-const buildPullRequestContextText = (payload: GitHubPullRequestContextResult) => {
-  return `GitHub pull request context (JSON)\n${JSON.stringify(payload, null, 2)}`;
+const buildPullRequestContextText = (provider: GitProviderId, payload: GitHubPullRequestContextResult) => {
+  const heading = provider === 'azure-devops'
+    ? 'Azure DevOps pull request context (JSON)'
+    : 'GitHub pull request context (JSON)';
+  return `${heading}\n${JSON.stringify(payload, null, 2)}`;
+};
+
+const isAzureDevOpsRemote = (remote: GitRemote | null | undefined): boolean => {
+  const url = `${remote?.fetchUrl || ''} ${remote?.pushUrl || ''}`.toLowerCase();
+  return url.includes('dev.azure.com') || url.includes('visualstudio.com') || url.includes('ssh.dev.azure.com');
 };
 
 export function GitHubPrPickerDialog({
@@ -65,20 +75,26 @@ export function GitHubPrPickerDialog({
   }) => void;
 }) {
   const { t } = useI18n();
-  const { github } = useRuntimeAPIs();
+  const { github, azureDevOps, git } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
+  const azureDevOpsAuthStatus = useAzureDevOpsAuthStore((state) => state.status);
+  const azureDevOpsAuthChecked = useAzureDevOpsAuthStore((state) => state.hasChecked);
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const isMobile = useUIStore((state) => state.isMobile);
   const { isTablet } = useDeviceInfo();
   const alwaysShowActions = isMobile || isTablet;
   const activeProject = useProjectsStore((state) => state.getActiveProject());
+  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
 
-  const projectDirectory = activeProject?.path ?? null;
+  const projectDirectory = React.useMemo(() => {
+    return activeProject?.path?.trim() || currentDirectory?.trim() || null;
+  }, [activeProject?.path, currentDirectory]);
 
   const [query, setQuery] = React.useState('');
   const [includeDiff, setIncludeDiff] = React.useState(false);
+  const [provider, setProvider] = React.useState<GitProviderId>('github');
   const [result, setResult] = React.useState<GitHubPullRequestsListResult | null>(null);
   const [prs, setPrs] = React.useState<GitHubPullRequestSummary[]>([]);
   const [page, setPage] = React.useState(1);
@@ -88,13 +104,33 @@ export function GitHubPrPickerDialog({
   const [isLoadingMore, setIsLoadingMore] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const copyKey = React.useCallback((suffix: string) => {
+    return `${provider === 'azure-devops' ? 'session.azureDevOpsPrPicker' : 'session.githubPrPicker'}.${suffix}`;
+  }, [provider]);
+  const tp = React.useCallback((suffix: string, values?: Record<string, string | number>) => {
+    return t(copyKey(suffix) as never, values as never);
+  }, [copyKey, t]);
+
+  const resolveProvider = React.useCallback(async (): Promise<GitProviderId> => {
+    if (!projectDirectory || !git?.getRemotes) {
+      return 'github';
+    }
+    const remotes = await git.getRemotes(projectDirectory).catch(() => []);
+    return remotes.some((remote) => isAzureDevOpsRemote(remote)) ? 'azure-devops' : 'github';
+  }, [git, projectDirectory]);
+
   const refresh = React.useCallback(async () => {
     if (!projectDirectory) {
       setResult(null);
-      setError(t('session.githubPrPicker.error.noActiveProject'));
+      setError(tp('error.noActiveProject'));
       return;
     }
-    if (githubAuthChecked && githubAuthStatus?.connected === false) {
+    const nextProvider = await resolveProvider();
+    setProvider(nextProvider);
+    const runtime = nextProvider === 'azure-devops' ? azureDevOps : github;
+    const authChecked = nextProvider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
+    const authStatus = nextProvider === 'azure-devops' ? azureDevOpsAuthStatus : githubAuthStatus;
+    if (authChecked && authStatus?.connected === false) {
       setResult({ connected: false });
       setPrs([]);
       setHasMore(false);
@@ -102,16 +138,16 @@ export function GitHubPrPickerDialog({
       setError(null);
       return;
     }
-    if (!github?.prsList) {
+    if (!runtime?.prsList) {
       setResult(null);
-      setError(t('session.githubPrPicker.error.runtimeUnavailable'));
+      setError(tp('error.runtimeUnavailable'));
       return;
     }
 
     setIsLoading(true);
     setError(null);
     try {
-      const next = await github.prsList(projectDirectory, { page: 1 });
+      const next = await runtime.prsList(projectDirectory, { page: 1 });
       setResult(next);
       setPrs(next.prs ?? []);
       setPage(next.page ?? 1);
@@ -124,29 +160,31 @@ export function GitHubPrPickerDialog({
     } finally {
       setIsLoading(false);
     }
-  }, [github, githubAuthChecked, githubAuthStatus, projectDirectory, t]);
+  }, [azureDevOps, azureDevOpsAuthChecked, azureDevOpsAuthStatus, github, githubAuthChecked, githubAuthStatus, projectDirectory, resolveProvider, tp]);
 
   const loadMore = React.useCallback(async () => {
     if (!projectDirectory) return;
-    if (!github?.prsList) return;
     if (isLoadingMore || isLoading) return;
     if (!hasMore) return;
+
+    const runtime = provider === 'azure-devops' ? azureDevOps : github;
+    if (!runtime?.prsList) return;
 
     setIsLoadingMore(true);
     try {
       const nextPage = page + 1;
-      const next = await github.prsList(projectDirectory, { page: nextPage });
+      const next = await runtime.prsList(projectDirectory, { page: nextPage });
       setResult(next);
       setPrs((prev) => [...prev, ...(next.prs ?? [])]);
       setPage(next.page ?? nextPage);
       setHasMore(Boolean(next.hasMore));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      toast.error(t('session.githubPrPicker.toast.loadMoreFailed'), { description: message });
+      toast.error(tp('toast.loadMoreFailed'), { description: message });
     } finally {
       setIsLoadingMore(false);
     }
-  }, [github, hasMore, isLoading, isLoadingMore, page, projectDirectory, t]);
+  }, [azureDevOps, github, hasMore, isLoading, isLoadingMore, page, projectDirectory, provider, tp]);
 
   React.useEffect(() => {
     if (!open) {
@@ -166,19 +204,22 @@ export function GitHubPrPickerDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    if (githubAuthChecked && githubAuthStatus?.connected === false) {
+    const authChecked = provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
+    const authStatus = provider === 'azure-devops' ? azureDevOpsAuthStatus : githubAuthStatus;
+    if (authChecked && authStatus?.connected === false) {
       setResult({ connected: false });
       setPrs([]);
       setHasMore(false);
       setPage(1);
       setError(null);
     }
-  }, [githubAuthChecked, githubAuthStatus, open]);
+  }, [azureDevOpsAuthChecked, azureDevOpsAuthStatus, githubAuthChecked, githubAuthStatus, open, provider]);
 
-  const connected = githubAuthChecked ? result?.connected !== false : true;
+  const authChecked = provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
+  const connected = authChecked ? result?.connected !== false : true;
 
-  const openGitHubSettings = React.useCallback(() => {
-    setSettingsPage('github');
+  const openProviderSettings = React.useCallback(() => {
+    setSettingsPage('git');
     setSettingsDialogOpen(true);
   }, [setSettingsDialogOpen, setSettingsPage]);
 
@@ -198,33 +239,41 @@ export function GitHubPrPickerDialog({
       toast.error(t('session.githubPrPicker.error.noActiveProject'));
       return;
     }
-    if (!github?.prContext) {
-      toast.error(t('session.githubPrPicker.error.runtimeUnavailable'));
+    const runtime = provider === 'azure-devops' ? azureDevOps : github;
+    if (!runtime?.prContext) {
+      toast.error(tp('error.runtimeUnavailable'));
       return;
     }
     if (loadingPrNumber) return;
 
     setLoadingPrNumber(prNumber);
     try {
-      const context = await github.prContext(projectDirectory, prNumber, {
-        includeDiff,
-        includeCheckDetails: false,
-        sourceRepo,
-      });
+      const context = provider === 'azure-devops'
+        ? await azureDevOps!.prContext(projectDirectory, prNumber, {
+          includeDiff,
+          includeCheckDetails: false,
+        })
+        : await github!.prContext(projectDirectory, prNumber, {
+          includeDiff,
+          includeCheckDetails: false,
+          sourceRepo,
+        });
 
       if (context.connected === false) {
-        toast.error(t('session.githubPrPicker.error.notConnected'));
+        toast.error(tp('error.notConnected'));
         return;
       }
 
       if (!context.pr) {
-        toast.error(t('session.githubPrPicker.error.prNotFound'));
+        toast.error(tp('error.prNotFound'));
         return;
       }
 
       if (!context.repo) {
-        toast.error(t('session.githubPrPicker.error.repoNotResolvable'), {
-          description: t('session.githubPrPicker.error.repoMustBeGithub'),
+        toast.error(tp('error.repoNotResolvable'), {
+          description: provider === 'azure-devops'
+            ? tp('error.repoMustMatchProvider')
+            : tp('error.repoMustBeGithub'),
         });
         return;
       }
@@ -239,7 +288,7 @@ export function GitHubPrPickerDialog({
           base: context.pr.base,
           includeDiff,
           instructionsText,
-          contextText: buildPullRequestContextText(context),
+          contextText: buildPullRequestContextText(provider, context),
           author: context.pr.author
             ? {
               login: context.pr.author.login,
@@ -251,14 +300,15 @@ export function GitHubPrPickerDialog({
       onOpenChange(false);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      toast.error(t('session.githubPrPicker.toast.loadDetailsFailed'), { description: message });
+      toast.error(tp('toast.loadDetailsFailed'), { description: message });
     } finally {
       setLoadingPrNumber(null);
     }
-  }, [github, includeDiff, loadingPrNumber, onOpenChange, onSelect, projectDirectory, t]);
+  }, [azureDevOps, github, includeDiff, loadingPrNumber, onOpenChange, onSelect, projectDirectory, provider, t, tp]);
 
-  const title = t('session.githubPrPicker.title');
-  const description = t('session.githubPrPicker.description');
+  const runtime = provider === 'azure-devops' ? azureDevOps : github;
+  const title = tp('title');
+  const description = tp('description');
 
   const content = (
     <>
@@ -266,7 +316,7 @@ export function GitHubPrPickerDialog({
         <div className="relative flex-1 min-w-0">
           <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder={t('session.githubPrPicker.searchPlaceholder')}
+            placeholder={tp('searchPlaceholder')}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             className="pl-9 w-full"
@@ -277,16 +327,16 @@ export function GitHubPrPickerDialog({
           onClick={() => setIncludeDiff((prev) => !prev)}
           className="h-9 shrink-0 flex items-center gap-2 text-left"
           aria-pressed={includeDiff}
-          aria-label={t('session.githubPrPicker.includeDiffAria')}
+           aria-label={tp('includeDiffAria')}
         >
           <span onClick={(e) => e.stopPropagation()}>
             <Checkbox
               checked={includeDiff}
               onChange={(checked) => setIncludeDiff(checked)}
-              ariaLabel={t('session.githubPrPicker.includeDiffAria')}
+              ariaLabel={tp('includeDiffAria')}
             />
           </span>
-          <span className="typography-small text-muted-foreground whitespace-nowrap">{t('session.githubPrPicker.includeDiff')}</span>
+          <span className="typography-small text-muted-foreground whitespace-nowrap">{tp('includeDiff')}</span>
         </button>
       </div>
 
@@ -295,23 +345,23 @@ export function GitHubPrPickerDialog({
             <div className="text-center text-muted-foreground py-8">{t('session.githubPrPicker.empty.noActiveProject')}</div>
           ) : null}
 
-          {!github ? (
-            <div className="text-center text-muted-foreground py-8">{t('session.githubPrPicker.empty.runtimeUnavailable')}</div>
+          {!runtime ? (
+            <div className="text-center text-muted-foreground py-8">{tp('empty.runtimeUnavailable')}</div>
           ) : null}
 
           {isLoading ? (
             <div className="text-center text-muted-foreground py-8 flex items-center justify-center gap-2">
               <Icon name="loader-4" className="h-4 w-4 animate-spin" />
-              {t('session.githubPrPicker.loading.pullRequests')}
+              {tp('loading.pullRequests')}
             </div>
           ) : null}
 
           {connected === false ? (
             <div className="text-center text-muted-foreground py-8 space-y-3">
-              <div>{t('session.githubPrPicker.empty.notConnected')}</div>
+              <div>{tp('empty.notConnected')}</div>
               <div className="flex justify-center">
-                <Button variant="outline" size="sm" onClick={openGitHubSettings}>
-                  {t('session.githubPrPicker.actions.openSettings')}
+                <Button variant="outline" size="sm" onClick={openProviderSettings}>
+                  {tp('actions.openSettings')}
                 </Button>
               </div>
             </div>
@@ -321,7 +371,7 @@ export function GitHubPrPickerDialog({
             <div className="text-center text-muted-foreground py-8 break-words">{error}</div>
           ) : null}
 
-          {directNumber && projectDirectory && github && connected ? (
+          {directNumber && projectDirectory && runtime && connected ? (
             <div
               className={cn(
                 'group flex items-center gap-2 py-1.5 hover:bg-interactive-hover/30 rounded transition-colors cursor-pointer',
@@ -331,8 +381,8 @@ export function GitHubPrPickerDialog({
             >
               <span className="typography-meta text-muted-foreground w-5 text-right flex-shrink-0">#</span>
               <p className="flex-1 min-w-0 typography-small text-foreground truncate ml-0.5">
-                {t('session.githubPrPicker.actions.usePullRequest', { number: directNumber })}
-              </p>
+                  {tp('actions.usePullRequest', { number: directNumber })}
+                </p>
               <div className="flex-shrink-0 h-5 flex items-center mr-2">
                 {loadingPrNumber === directNumber ? (
                   <Icon name="loader-4" className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -341,8 +391,8 @@ export function GitHubPrPickerDialog({
             </div>
           ) : null}
 
-          {filtered.length === 0 && !isLoading && connected && github && projectDirectory ? (
-            <div className="text-center text-muted-foreground py-8">{query ? t('session.githubPrPicker.empty.noPullRequestsFound') : t('session.githubPrPicker.empty.noOpenPullRequestsFound')}</div>
+          {filtered.length === 0 && !isLoading && connected && runtime && projectDirectory ? (
+            <div className="text-center text-muted-foreground py-8">{query ? tp('empty.noPullRequestsFound') : tp('empty.noOpenPullRequestsFound')}</div>
           ) : null}
 
           {filtered.map((pr) => (
@@ -380,8 +430,8 @@ export function GitHubPrPickerDialog({
                       alwaysShowActions ? "flex" : "hidden group-hover:flex"
                     )}
                     onClick={(e) => e.stopPropagation()}
-                    aria-label={t('session.githubPrPicker.actions.openInGitHubAria')}
-                  >
+                     aria-label={provider === 'azure-devops' ? tp('actions.openInProviderAria') : tp('actions.openInGitHubAria')}
+                   >
                     <Icon name="external-link" className="h-4 w-4" />
                   </a>
                 )}
@@ -389,7 +439,7 @@ export function GitHubPrPickerDialog({
             </div>
           ))}
 
-          {hasMore && connected && projectDirectory && github ? (
+          {hasMore && connected && projectDirectory && runtime ? (
             <div className="py-2 flex justify-center">
               <button
                 type="button"
@@ -403,10 +453,10 @@ export function GitHubPrPickerDialog({
                 {isLoadingMore ? (
                   <span className="inline-flex items-center gap-2">
                     <Icon name="loader-4" className="h-4 w-4 animate-spin" />
-                    {t('session.githubPrPicker.loading.more')}
+                    {tp('loading.more')}
                   </span>
                 ) : (
-                  t('session.githubPrPicker.actions.loadMore')
+                  tp('actions.loadMore')
                 )}
               </button>
             </div>
@@ -441,7 +491,7 @@ export function GitHubPrPickerDialog({
       <DialogContent className="max-w-2xl max-h-[70vh] flex flex-col">
         <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
-            <Icon name="github" className="h-5 w-5" />
+            <Icon name={provider === 'azure-devops' ? 'git-repository' : 'github'} className="h-5 w-5" />
             {title}
           </DialogTitle>
           <DialogDescription>

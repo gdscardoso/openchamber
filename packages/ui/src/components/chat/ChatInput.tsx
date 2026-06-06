@@ -49,8 +49,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
-import { GitHubIssuePickerDialog } from '@/components/session/GitHubIssuePickerDialog';
-import { GitHubPrPickerDialog } from '@/components/session/GitHubPrPickerDialog';
+import { IssuePickerDialog } from '@/components/session/IssuePickerDialog';
+import { PrPickerDialog } from '@/components/session/PrPickerDialog';
 import { Icon } from "@/components/icon/Icon";
 import { DraftPresetChips } from './DraftPresetChips';
 import { useChatSearchDirectory } from '@/hooks/useChatSearchDirectory';
@@ -559,7 +559,7 @@ const ComposerAttachmentControls = React.memo(function ComposerAttachmentControl
                                 }}
                             >
                                 <Icon name="github"/>
-                                {t('chat.chatInput.actions.linkGithubIssue')}
+                                {t('chat.chatInput.actions.linkIssue')}
                             </DropdownMenuItem>
                             <DropdownMenuItem
                                 onSelect={() => {
@@ -567,7 +567,7 @@ const ComposerAttachmentControls = React.memo(function ComposerAttachmentControl
                                 }}
                             >
                                 <Icon name="git-pull-request"/>
-                                {t('chat.chatInput.actions.linkGithubPr')}
+                                {t('chat.chatInput.actions.linkPr')}
                             </DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
@@ -1315,10 +1315,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     // Issue linking state
     const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
     const [prPickerOpen, setPrPickerOpen] = React.useState(false);
-    const [linkedIssue, setLinkedIssue] = React.useState<{ 
-        number: number; 
-        title: string; 
-        url: string; 
+    const [linkedIssue, setLinkedIssue] = React.useState<{
+        number: number;
+        title: string;
+        url: string;
         contextText: string;
         author?: { login: string; avatarUrl?: string };
     } | null>(null);
@@ -4459,7 +4459,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         </form>
 
         {/* Issue Picker Dialog */}
-        <GitHubIssuePickerDialog
+        <IssuePickerDialog
             open={issuePickerOpen}
             onOpenChange={setIssuePickerOpen}
             mode="select"
@@ -4468,7 +4468,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 setLinkedPr(null);
             }}
         />
-        <GitHubPrPickerDialog
+        <PrPickerDialog
             open={prPickerOpen}
             onOpenChange={setPrPickerOpen}
             onSelect={(pr) => {

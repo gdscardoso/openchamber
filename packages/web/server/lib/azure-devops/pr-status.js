@@ -1,5 +1,6 @@
 import { getRemotes, getStatus } from '../git/index.js';
 import { normalizeAzureBranchRef } from './client.js';
+import { loadAzureDevOpsChecks } from './checks.js';
 import { resolveAzureDevOpsRepoFromDirectory } from './repo/index.js';
 
 const normalizeText = (value) => typeof value === 'string' ? value.trim() : '';
@@ -79,14 +80,20 @@ export async function resolveAzureDevOpsPrStatus({ client, directory, branch, re
       ];
     }
     const pr = pulls[0] ? mapPr(pulls[0], resolvedRepo) : null;
+    const rawMergeStatus = pulls[0]?.mergeStatus;
+    const mergeStatusOk = rawMergeStatus === 'succeeded' || !rawMergeStatus || rawMergeStatus === 'notSet';
+    const checksResult = pr
+      ? await loadAzureDevOpsChecks({ client, repo: resolvedRepo, pullRequestId: pr.number })
+      : { checks: null, canMerge: false };
+    const canMerge = Boolean(pr?.state === 'open' && !pr.draft && mergeStatusOk && checksResult.canMerge);
     return {
       connected: true,
       provider: 'azure-devops',
       repo: resolvedRepo,
       branch,
       pr,
-      checks: null,
-      canMerge: false,
+      checks: checksResult.checks,
+      canMerge,
       defaultBranch: normalizeText(resolvedRepo.defaultBranch).replace(/^refs\/heads\//, '') || null,
       resolvedRemoteName: candidateRemoteName,
     };

@@ -1,4 +1,4 @@
-import { getRemoteUrl } from '../../git/index.js';
+import { getRemoteUrl } from '../../git/service.js';
 
 const stripGitSuffix = (value) => value.endsWith('.git') ? value.slice(0, -4) : value;
 const cleanPart = (value) => decodeURIComponent(String(value || '').trim());

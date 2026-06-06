@@ -32,7 +32,7 @@ import { useProjectRepoStatus } from './sidebar/hooks/useProjectRepoStatus';
 import { useProjectSessionLists } from './sidebar/hooks/useProjectSessionLists';
 import { useSessionFolderCleanup } from './sidebar/hooks/useSessionFolderCleanup';
 import { useStickyProjectHeaders } from './sidebar/hooks/useStickyProjectHeaders';
-import { getGitHubPrStatusKey, usePrVisualSummaryByKeys, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
+import { getGitPrStatusKey, usePrVisualSummaryByKeys, useGitPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { ProjectEditDialog } from '@/components/layout/ProjectEditDialog';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
 import { SessionGroupSection } from './sidebar/SessionGroupSection';
@@ -78,7 +78,9 @@ import {
 } from '@/stores/useGlobalSessionsStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
+import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
+import { resolveProviderFromRemotes } from '@/lib/gitProviders/resolveProvider';
 
 const PROJECT_COLLAPSE_STORAGE_KEY = 'oc.sessions.projectCollapse';
 const GROUP_ORDER_STORAGE_KEY = 'oc.sessions.groupOrder';
@@ -832,13 +834,15 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     void refreshGlobalSessionsForDirectories(addedDirectories, syncSessionsSnapshotRef.current);
   }, [projectSessionDirectories]);
 
-  const { github } = useRuntimeAPIs();
+  const { git, github, azureDevOps } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
+  const azureDevOpsAuthStatus = useAzureDevOpsAuthStore((state) => state.status);
+  const azureDevOpsAuthChecked = useAzureDevOpsAuthStore((state) => state.hasChecked);
   const gitRepoStatus = useGitRepoStatusMap(normalizedProjectPaths);
-  const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
-  const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
-  const refreshPrStatusTargets = useGitHubPrStatusStore((state) => state.refreshTargets);
+  const ensurePrStatusEntry = useGitPrStatusStore((state) => state.ensureEntry);
+  const setPrStatusParams = useGitPrStatusStore((state) => state.setParams);
+  const refreshPrStatusTargets = useGitPrStatusStore((state) => state.refreshTargets);
 
   useProjectRepoStatus({
     normalizedProjects,
@@ -1095,7 +1099,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         if (!directory || !branch) {
           return;
         }
-        keys.add(getGitHubPrStatusKey(directory, branch));
+        keys.add(getGitPrStatusKey(directory, branch));
       });
     });
     return [...keys];
@@ -1104,7 +1108,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const prVisualSummaryMap = usePrVisualSummaryByKeys(prLookupKeys);
 
   React.useEffect(() => {
-    if (!githubAuthChecked || !githubAuthStatus?.connected || !github) {
+    if (!git) {
       return;
     }
 
@@ -1122,8 +1126,8 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         if (!directory || !branch) {
           return;
         }
-        const key = getGitHubPrStatusKey(directory, branch);
-        const entry = useGitHubPrStatusStore.getState().entries[key];
+        const key = getGitPrStatusKey(directory, branch);
+        const entry = useGitPrStatusStore.getState().entries[key];
         const hasPr = Boolean(entry?.status?.pr);
         const retryKey = `${directory}::${branch}`;
         const noPrLastCheckedAt = Math.max(entry?.lastRefreshAt ?? 0, entry?.lastDiscoveryPollAt ?? 0);
@@ -1151,32 +1155,71 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
     const uniqueTargets = new Map<string, { directory: string; branch: string; remoteName?: string | null }>();
     missingTargets.forEach((target) => {
-      const key = getGitHubPrStatusKey(target.directory, target.branch, target.remoteName ?? null);
+        const key = getGitPrStatusKey(target.directory, target.branch, target.remoteName ?? null);
       if (!uniqueTargets.has(key)) {
         uniqueTargets.set(key, target);
       }
     });
 
-    uniqueTargets.forEach((target, key) => {
-      ensurePrStatusEntry(key);
-      setPrStatusParams(key, {
-        directory: target.directory,
-        branch: target.branch,
-        remoteName: target.remoteName ?? null,
-        canShow: true,
-        github,
-        githubAuthChecked,
-        githubConnected: githubAuthStatus.connected,
-      });
-    });
+    let cancelled = false;
+    void (async () => {
+      const directoryProviderCache = new Map<string, {
+        remoteName: string | null;
+        providerApi: typeof github | typeof azureDevOps;
+        providerAuthChecked: boolean;
+        providerConnected: boolean | null;
+      }>();
 
-    void refreshPrStatusTargets([...uniqueTargets.values()], {
-      silent: true,
-      markInitialResolved: true,
-    });
+      for (const [key, target] of uniqueTargets) {
+        let providerContext = directoryProviderCache.get(target.directory);
+        if (!providerContext) {
+          const remotes = await git.getRemotes(target.directory).catch(() => []);
+          const resolved = resolveProviderFromRemotes(remotes, target.remoteName ?? null);
+          const providerApi = resolved.provider === 'azure-devops' ? azureDevOps : github;
+          providerContext = {
+            remoteName: target.remoteName ?? resolved.remoteName,
+            providerApi,
+            providerAuthChecked: resolved.provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked,
+            providerConnected: resolved.provider === 'azure-devops'
+              ? (azureDevOpsAuthStatus?.connected ?? null)
+              : (githubAuthStatus?.connected ?? null),
+          };
+          directoryProviderCache.set(target.directory, providerContext);
+        }
+        if (cancelled) {
+          return;
+        }
+        ensurePrStatusEntry(key);
+        setPrStatusParams(key, {
+          directory: target.directory,
+          branch: target.branch,
+          remoteName: providerContext.remoteName,
+          canShow: true,
+          providerApi: providerContext.providerApi,
+          providerAuthChecked: providerContext.providerAuthChecked,
+          providerConnected: providerContext.providerConnected,
+        });
+      }
+
+      if (cancelled) {
+        return;
+      }
+      await refreshPrStatusTargets([...uniqueTargets.values()], {
+        silent: true,
+        markInitialResolved: true,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [
+    azureDevOps,
+    azureDevOpsAuthChecked,
+    azureDevOpsAuthStatus?.connected,
     collapsedProjects,
     ensurePrStatusEntry,
+    git,
     github,
     githubAuthChecked,
     githubAuthStatus?.connected,

@@ -4,7 +4,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useViewportStore } from '@/sync/viewport-store';
 import { useSessions, useDirectorySync } from '@/sync/sync-context';
 import { MEMORY_LIMITS } from '@/stores/types/sessionTypes';
-import { useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
+import { useGitPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { getBackgroundTrimLimit } from '@/stores/types/sessionTypes';
 import { getStreamPerfSnapshot, getVsCodeStreamPerfSnapshot, resetStreamPerf, type StreamPerfSnapshot } from '@/stores/utils/streamDebug';
 import { Card } from '@/components/ui/card';
@@ -107,7 +107,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
   const sessionMemoryState = useViewportStore((state) => state.sessionMemoryState);
   const sessions = useSessions();
   const messageRecord = useDirectorySync((state) => state.message);
-  const totalGitHubRequests = useGitHubPrStatusStore((state) => state.totalRequestCount);
+  const totalPrStatusRequests = useGitPrStatusStore((state) => state.totalRequestCount);
   const [streamSnapshot, setStreamSnapshot] = React.useState<StreamPerfSnapshot>(() => getStreamPerfSnapshot());
   const [vscodeStreamSnapshot, setVsCodeStreamSnapshot] = React.useState<StreamPerfSnapshot>(() => getVsCodeStreamPerfSnapshot());
   const streamMetricCounts = React.useMemo(() => {
@@ -271,7 +271,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
             </div>
             <div className="flex justify-between gap-2">
               <span className="text-[var(--surface-muted-foreground)]">{t('memoryDebugPanel.metric.githubTotalRequests')}</span>
-              <span className="text-[var(--surface-foreground)]">{totalGitHubRequests}</span>
+              <span className="text-[var(--surface-foreground)]">{totalPrStatusRequests}</span>
             </div>
           </div>
 

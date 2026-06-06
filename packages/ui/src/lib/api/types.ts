@@ -954,7 +954,9 @@ export type GitHubPullRequestCreateInput = {
   /** Remote where the head branch lives (source repo, e.g., 'origin' for forks) */
   headRemote?: string;
   /** Explicit target repo (alternative to remote, for auto-detected upstream) */
-  targetRepo?: { owner: string; repo: string };
+  targetRepo?:
+    | { owner: string; repo: string }
+    | { organization: string; project: string | null; repo: string; repositoryId?: string };
 };
 
 export type GitHubPullRequestUpdateInput = {
@@ -1023,7 +1025,7 @@ export type GitHubIssueComment = {
 
 export type GitHubIssuesListResult = {
   connected: boolean;
-  repo?: GitHubRepoRef | null;
+  repo?: GitHubRepoRef | AzureDevOpsRepoRef | null;
   issues?: GitHubIssueSummary[];
   page?: number;
   hasMore?: boolean;
@@ -1035,15 +1037,25 @@ export type GitHubRepoUpstreamResult = {
   upstream: { owner: string; repo: string; url: string; defaultBranch: string; defaultBranchSha: string | null; remoteName: string | null } | null;
 };
 
+export type AzureDevOpsRepoUpstream = {
+  organization: string;
+  project: string | null;
+  repo: string;
+  repositoryId?: string;
+  url: string;
+  defaultBranch: string;
+  remoteName: string | null;
+};
+
 export type GitHubIssueGetResult = {
   connected: boolean;
-  repo?: GitHubRepoRef | null;
+  repo?: GitHubRepoRef | AzureDevOpsRepoRef | null;
   issue?: GitHubIssue | null;
 };
 
 export type GitHubIssueCommentsResult = {
   connected: boolean;
-  repo?: GitHubRepoRef | null;
+  repo?: GitHubRepoRef | AzureDevOpsRepoRef | null;
   comments?: GitHubIssueComment[];
 };
 
@@ -1141,11 +1153,23 @@ export interface AzureDevOpsAPI {
   prStatus(directory: string, branch: string, remote?: string, options?: { force?: boolean }): Promise<GitHubPullRequestStatus>;
   prCreate(payload: GitHubPullRequestCreateInput): Promise<GitHubPullRequest>;
   prUpdate(payload: GitHubPullRequestUpdateInput): Promise<GitHubPullRequest>;
+  prMerge(payload: GitHubPullRequestMergeInput): Promise<GitHubPullRequestMergeResult>;
+  prReady(payload: GitHubPullRequestReadyInput): Promise<GitHubPullRequestReadyResult>;
+  prsList(directory: string, options?: { page?: number; remote?: string }): Promise<GitHubPullRequestsListResult>;
   prContext(
     directory: string,
     number: number,
     options?: { includeDiff?: boolean; includeCheckDetails?: boolean; remote?: string | null }
   ): Promise<GitHubPullRequestContextResult>;
+  issuesList(directory: string, options?: { page?: number; remote?: string }): Promise<GitHubIssuesListResult>;
+  issueGet(directory: string, number: number, options?: { remote?: string }): Promise<GitHubIssueGetResult>;
+  issueComments(directory: string, number: number, options?: { remote?: string }): Promise<GitHubIssueCommentsResult>;
+  repoBranches(directory: string, remote?: string): Promise<string[]>;
+  repoUpstream(directory: string): Promise<{
+    connected: boolean;
+    isFork: boolean;
+    upstream: AzureDevOpsRepoUpstream | null;
+  }>;
 }
 
 export interface RemoteClientRecord {

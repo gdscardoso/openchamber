@@ -34,11 +34,14 @@ import { useSelectionStore } from '@/sync/selection-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
-import { getGitHubPrStatusKey, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
+import { getGitPrStatusKey, useGitPrStatusStore } from '@/stores/useGitHubPrStatusStore';
+import { resolveProviderFromRemote } from '@/lib/gitProviders/resolveProvider';
 import type {
+  AzureDevOpsRepoUpstream,
   GitHubPullRequest,
   GitHubCheckRun,
   GitHubAPI,
+  GitHubRepoUpstreamResult,
   AzureDevOpsAPI,
   GitHubPullRequestContextResult,
   GitHubPullRequestStatus,
@@ -47,7 +50,9 @@ import type {
 import { useI18n } from '@/lib/i18n';
 
 type MergeMethod = 'merge' | 'squash' | 'rebase';
-type DetectedUpstream = { owner: string; repo: string; url: string; defaultBranch?: string; defaultBranchSha?: string | null; remoteName?: string | null };
+type DetectedUpstream =
+  | { provider: 'github'; owner: string; repo: string; url: string; defaultBranch?: string; defaultBranchSha?: string | null; remoteName?: string | null }
+  | ({ provider: 'azure-devops' } & AzureDevOpsRepoUpstream);
 
 const statusColor = (state: string | undefined | null): string => {
   switch (state) {
@@ -202,8 +207,7 @@ const pickInitialPrRemote = (
 const isEphemeralPrRemote = (name: string): boolean => name.startsWith('pr-');
 
 const isAzureDevOpsRemote = (remote: GitRemote | null | undefined): boolean => {
-  const url = `${remote?.fetchUrl || ''} ${remote?.pushUrl || ''}`.toLowerCase();
-  return url.includes('dev.azure.com') || url.includes('visualstudio.com') || url.includes('ssh.dev.azure.com');
+  return resolveProviderFromRemote(`${remote?.fetchUrl || ''} ${remote?.pushUrl || ''}`) === 'azure-devops';
 };
 
 const rankRemotesForAutoSelect = (
@@ -257,7 +261,17 @@ const pullRequestDraftSnapshots = new Map<string, PullRequestDraftSnapshot>();
 
 const openExternal = openExternalUrl;
 
-function useDetectedUpstreamRepo(directory: string, github: GitHubAPI | undefined) {
+function useDetectedUpstreamRepo({
+  directory,
+  provider,
+  github,
+  azureDevOps,
+}: {
+  directory: string;
+  provider: 'github' | 'azure-devops';
+  github: GitHubAPI | undefined;
+  azureDevOps: AzureDevOpsAPI | undefined;
+}) {
   const [detectedUpstream, setDetectedUpstream] = React.useState<DetectedUpstream | null>(null);
   const [upstreamBranches, setUpstreamBranches] = React.useState<string[]>([]);
   const attemptedDirectoryRef = React.useRef<string | null>(null);
@@ -268,26 +282,48 @@ function useDetectedUpstreamRepo(directory: string, github: GitHubAPI | undefine
   }, [directory]);
 
   React.useEffect(() => {
-    if (!directory || !github?.repoUpstream || attemptedDirectoryRef.current === directory) {
+    if (!directory || attemptedDirectoryRef.current === `${provider}:${directory}`) {
       return;
     }
-    attemptedDirectoryRef.current = directory;
+    attemptedDirectoryRef.current = `${provider}:${directory}`;
 
     let cancelled = false;
     void (async () => {
       try {
-        const result = await github.repoUpstream(directory);
+        const result = provider === 'azure-devops'
+          ? await azureDevOps?.repoUpstream?.(directory)
+          : await github?.repoUpstream?.(directory);
         if (cancelled || !result?.isFork || !result.upstream) {
           return;
         }
 
-        setDetectedUpstream(result.upstream);
-        if (!github.repoBranches) {
+        if (provider === 'azure-devops') {
+          const upstream = { provider, ...result.upstream } as DetectedUpstream;
+          setDetectedUpstream(upstream);
+          if (!azureDevOps?.repoBranches) {
+            return;
+          }
+          try {
+            const branches = upstream.remoteName
+              ? await azureDevOps.repoBranches(directory, upstream.remoteName)
+              : [upstream.defaultBranch].filter((value): value is string => Boolean(value));
+            if (!cancelled) {
+              setUpstreamBranches(Array.from(new Set(branches.filter((value): value is string => Boolean(value)))));
+            }
+          } catch {
+            // Silently fail - branch list is best-effort.
+          }
+          return;
+        }
+
+        const githubUpstream = result.upstream as NonNullable<GitHubRepoUpstreamResult['upstream']>;
+        setDetectedUpstream({ provider: 'github', ...githubUpstream });
+        if (!github?.repoBranches) {
           return;
         }
 
         try {
-          const branches = await github.repoBranches(result.upstream.owner, result.upstream.repo);
+          const branches = await github.repoBranches(githubUpstream.owner, githubUpstream.repo);
           if (!cancelled) {
             setUpstreamBranches(branches);
           }
@@ -302,7 +338,7 @@ function useDetectedUpstreamRepo(directory: string, github: GitHubAPI | undefine
     return () => {
       cancelled = true;
     };
-  }, [directory, github]);
+  }, [azureDevOps, directory, github, provider]);
 
   return { detectedUpstream, upstreamBranches };
 }
@@ -329,8 +365,8 @@ export const PullRequestSection: React.FC<{
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const { isMobile, hasTouchInput } = useDeviceInfo();
 
-  const openGitHubSettings = React.useCallback(() => {
-    setSettingsPage('github');
+  const openProviderSettings = React.useCallback(() => {
+    setSettingsPage('git');
     setSettingsDialogOpen(true);
   }, [setSettingsDialogOpen, setSettingsPage]);
 
@@ -339,12 +375,12 @@ export const PullRequestSection: React.FC<{
     () => pullRequestDraftSnapshots.get(snapshotKey) ?? null,
     [snapshotKey]
   );
-  const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
-  const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
-  const startPrStatusWatching = useGitHubPrStatusStore((state) => state.startWatching);
-  const stopPrStatusWatching = useGitHubPrStatusStore((state) => state.stopWatching);
-  const refreshPrStatus = useGitHubPrStatusStore((state) => state.refresh);
-  const updatePrStatus = useGitHubPrStatusStore((state) => state.updateStatus);
+  const ensurePrStatusEntry = useGitPrStatusStore((state) => state.ensureEntry);
+  const setPrStatusParams = useGitPrStatusStore((state) => state.setParams);
+  const startPrStatusWatching = useGitPrStatusStore((state) => state.startWatching);
+  const stopPrStatusWatching = useGitPrStatusStore((state) => state.stopWatching);
+  const refreshPrStatus = useGitPrStatusStore((state) => state.refresh);
+  const updatePrStatus = useGitPrStatusStore((state) => state.updateStatus);
 
   const [title, setTitle] = React.useState(() => initialSnapshot?.title ?? branchToTitle(branch));
   const [body, setBody] = React.useState(() => initialSnapshot?.body ?? '');
@@ -386,21 +422,27 @@ export const PullRequestSection: React.FC<{
   const providerConnected = isAzureDevOpsProvider ? azureDevOpsAuthStatus?.connected : githubAuthStatus?.connected;
   const providerName = isAzureDevOpsProvider ? 'Azure DevOps' : 'GitHub';
   const [useDetectedUpstream, setUseDetectedUpstream] = React.useState(false);
-  const { detectedUpstream, upstreamBranches } = useDetectedUpstreamRepo(directory, isAzureDevOpsProvider ? undefined : github);
+  const { detectedUpstream, upstreamBranches } = useDetectedUpstreamRepo({
+    directory,
+    provider: selectedProvider,
+    github,
+    azureDevOps,
+  });
 
   React.useEffect(() => {
     setUseDetectedUpstream(false);
   }, [directory]);
 
   const hasUpstreamRemote = remotes.some((r) => r.name === 'upstream');
+  const detectedUpstreamDefaultBranchSha = detectedUpstream?.provider === 'github' ? detectedUpstream.defaultBranchSha ?? null : null;
   const isFork = hasUpstreamRemote || detectedUpstream !== null;
   const canShow = Boolean(directory && branch && baseBranch && (branch !== baseBranch || isFork));
 
   const prStatusKey = React.useMemo(
-    () => getGitHubPrStatusKey(directory, branch),
+    () => getGitPrStatusKey(directory, branch),
     [directory, branch],
   );
-  const statusEntry = useGitHubPrStatusStore((state) => state.entries[prStatusKey]);
+  const statusEntry = useGitPrStatusStore((state) => state.entries[prStatusKey]);
 
   const isLoading = statusEntry?.isLoading ?? false;
   const status = statusEntry?.status ?? null;
@@ -504,7 +546,11 @@ export const PullRequestSection: React.FC<{
 
   // Auto-enable detected upstream when there's no explicit upstream remote
   React.useEffect(() => {
-    if (detectedUpstream && !hasUpstreamRemote) {
+    if (
+      detectedUpstream
+      && !hasUpstreamRemote
+      && (detectedUpstream.provider === 'github' || Boolean(detectedUpstream.remoteName))
+    ) {
       setUseDetectedUpstream(true);
     }
   }, [detectedUpstream, hasUpstreamRemote]);
@@ -938,7 +984,8 @@ export const PullRequestSection: React.FC<{
           rawDetails: annotation.rawDetails,
         }));
       });
-      const payloadText = `GitHub PR failed checks (JSON)\n${JSON.stringify({
+      const providerLabel = context.pr?.provider === 'azure-devops' ? 'Azure DevOps' : 'GitHub';
+      const payloadText = `${providerLabel} PR failed checks (JSON)\n${JSON.stringify({
         repo: context.repo ?? null,
         pr: context.pr ?? null,
         failedChecks: failed,
@@ -1082,9 +1129,9 @@ export const PullRequestSection: React.FC<{
       branch,
       remoteName: selectedRemote?.name ?? null,
       canShow,
-      github: prProviderApi,
-      githubAuthChecked: providerAuthChecked,
-      githubConnected: providerConnected ?? null,
+      providerApi: prProviderApi,
+      providerAuthChecked,
+      providerConnected: providerConnected ?? null,
     });
   }, [
     branch,
@@ -1207,8 +1254,8 @@ export const PullRequestSection: React.FC<{
       // For cross-repo PRs, use the upstream's default branch SHA for the commit range.
       // Using a bare branch name like "main" would resolve to the local ref, making
       // "git log main..main" a no-op. The SHA points to the actual upstream commit.
-      const baseRef = (useDetectedUpstream && detectedUpstream?.defaultBranchSha)
-        ? detectedUpstream.defaultBranchSha
+      const baseRef = (useDetectedUpstream && detectedUpstreamDefaultBranchSha)
+        ? detectedUpstreamDefaultBranchSha
         : targetBaseBranch;
       const payload: { base: string; head: string; context?: string; files?: string[] } = {
         base: baseRef,
@@ -1232,7 +1279,7 @@ export const PullRequestSection: React.FC<{
     } finally {
       setIsGenerating(false);
     }
-  }, [additionalContext, branch, detectedUpstream?.defaultBranchSha, directory, isGenerating, onGeneratedDescription, targetBaseBranch, t, useDetectedUpstream]);
+  }, [additionalContext, branch, detectedUpstreamDefaultBranchSha, directory, isGenerating, onGeneratedDescription, targetBaseBranch, t, useDetectedUpstream]);
 
   const createPr = React.useCallback(async () => {
     if (!prProviderApi?.prCreate) {
@@ -1269,7 +1316,18 @@ export const PullRequestSection: React.FC<{
         ...(body.trim() ? { body } : {}),
         draft,
         ...(usingDetectedUpstream
-          ? { targetRepo: { owner: detectedUpstream.owner, repo: detectedUpstream.repo }, headRemote: 'origin' }
+          ? (usingDetectedUpstream.provider === 'github'
+              ? { targetRepo: { owner: usingDetectedUpstream.owner, repo: usingDetectedUpstream.repo }, headRemote: 'origin' }
+              : {
+                  targetRepo: {
+                    organization: usingDetectedUpstream.organization,
+                    project: usingDetectedUpstream.project,
+                    repo: usingDetectedUpstream.repo,
+                    repositoryId: usingDetectedUpstream.repositoryId,
+                  },
+                  headRemote: selectedRemote?.name ?? 'origin',
+                  ...(usingDetectedUpstream.remoteName ? { remote: usingDetectedUpstream.remoteName } : {}),
+                })
           : {
               ...(selectedRemote ? { remote: selectedRemote.name } : {}),
               ...(!isAzureDevOpsProvider && trackingRemoteName && trackingRemoteName !== selectedRemote?.name
@@ -1290,13 +1348,13 @@ export const PullRequestSection: React.FC<{
   }, [body, branch, detectedUpstream, directory, draft, isAzureDevOpsProvider, prProviderApi, prStatusKey, refresh, scheduleActionRefresh, selectedRemote, targetBaseBranch, title, trackingBranch, updatePrStatus, useDetectedUpstream, t]);
 
   const mergePr = React.useCallback(async (pr: GitHubPullRequest) => {
-    if (!github?.prMerge) {
+    if (!prProviderApi?.prMerge) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
     setIsMerging(true);
     try {
-      const result = await github.prMerge({ directory, number: pr.number, method: mergeMethod });
+      const result = await prProviderApi.prMerge({ directory, number: pr.number, method: mergeMethod });
       if (result.merged) {
         toast.success(t('gitView.pr.toast.prMerged'));
       } else {
@@ -1307,35 +1365,29 @@ export const PullRequestSection: React.FC<{
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error(t('gitView.pr.toast.mergeFailed'), { description: message });
-      if (pr.url) {
-        void openExternal(pr.url);
-      }
     } finally {
       setIsMerging(false);
     }
-  }, [directory, github, mergeMethod, refresh, scheduleActionRefresh, t]);
+  }, [directory, prProviderApi, mergeMethod, refresh, scheduleActionRefresh, t]);
 
   const markReady = React.useCallback(async (pr: GitHubPullRequest) => {
-    if (!github?.prReady) {
+    if (!prProviderApi?.prReady) {
       toast.error(t('gitView.pr.toast.githubApiUnavailable'));
       return;
     }
     setIsMarkingReady(true);
     try {
-      await github.prReady({ directory, number: pr.number });
+      await prProviderApi.prReady({ directory, number: pr.number });
       toast.success(t('gitView.pr.toast.markedReady'));
       await refresh({ force: true });
       scheduleActionRefresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       toast.error(t('gitView.pr.toast.markReadyFailed'), { description: message });
-      if (pr.url) {
-        void openExternal(pr.url);
-      }
     } finally {
       setIsMarkingReady(false);
     }
-  }, [directory, github, refresh, scheduleActionRefresh, t]);
+  }, [directory, prProviderApi, refresh, scheduleActionRefresh, t]);
 
   const updatePr = React.useCallback(async (pr: GitHubPullRequest) => {
     if (!prProviderApi?.prUpdate) {
@@ -1397,6 +1449,7 @@ export const PullRequestSection: React.FC<{
   const checks = status?.checks ?? null;
   const canMerge = Boolean(status?.canMerge);
   const isConnected = Boolean(status?.connected);
+  const canMarkReady = Boolean(pr?.state === 'open' && pr.draft && isConnected);
   const shouldShowConnectionNotice = providerAuthChecked && status?.connected === false;
   const terminalPr = pr && pr.state !== 'open' ? pr : null;
   const prVisualState = getPrVisualState(status);
@@ -1496,7 +1549,7 @@ export const PullRequestSection: React.FC<{
               <div className="typography-meta text-muted-foreground">
               {t('gitView.pr.providerNotConnected', { provider: providerName })}
             </div>
-                <Button variant="outline" size="sm" onClick={openGitHubSettings} className="w-fit">
+                <Button variant="outline" size="sm" onClick={openProviderSettings} className="w-fit">
                   {t('gitView.pr.actions.openSettings')}
                 </Button>
               </div>
@@ -1714,14 +1767,18 @@ export const PullRequestSection: React.FC<{
                         <TooltipContent><p>{t('gitView.pr.actions.shareComments')}</p></TooltipContent>
                       </Tooltip>
 
-                      {canMerge && pr.draft && pr.state === 'open' ? (
+                      {canMarkReady ? (
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <Button
                               variant="outline"
                               size="sm"
                               className="h-7 w-7 px-0"
-                              onClick={() => markReady(pr)}
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                void markReady(pr);
+                              }}
                               disabled={isMarkingReady || isMerging || isUpdating || isEditingPr}
                               aria-label={t('gitView.pr.actions.markReadyAria')}
                             >
@@ -1755,7 +1812,11 @@ export const PullRequestSection: React.FC<{
                               <Button
                                 size="sm"
                                 className="h-7 w-7 px-0"
-                                onClick={() => mergePr(pr)}
+                                onClick={(event) => {
+                                  event.preventDefault();
+                                  event.stopPropagation();
+                                  void mergePr(pr);
+                                }}
                                 disabled={isMerging || isMarkingReady || pr.state !== 'open' || pr.draft || isUpdating || isEditingPr}
                                 aria-label={t('gitView.pr.actions.mergePrAria')}
                               >

@@ -21,6 +21,7 @@ import * as sessionActions from '@/sync/session-actions';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useContextStore } from '@/stores/contextStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { opencodeClient } from '@/lib/opencode/client';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
@@ -28,7 +29,7 @@ import { parseModelIdentifier } from '@/lib/modelIdentifier';
 import { useDeviceInfo } from '@/lib/device';
 import { createWorktreeSessionForNewBranch } from '@/lib/worktreeSessionCreator';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
-import type { GitHubIssue, GitHubIssueComment, GitHubIssuesListResult, GitHubIssueSummary, GitHubRepoSelector } from '@/lib/api/types';
+import type { GitHubIssue, GitHubIssueComment, GitHubIssuesListResult, GitHubIssueSummary, GitHubRepoSelector, GitProviderId, GitRemote } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
 
 const parseIssueNumber = (value: string): number | null => {
@@ -38,6 +39,12 @@ const parseIssueNumber = (value: string): number | null => {
   const urlMatch = trimmed.match(/\/issues\/(\d+)(?:\b|\/|$)/i);
   if (urlMatch) {
     const parsed = Number(urlMatch[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+
+  const workItemUrlMatch = trimmed.match(/\/_workitems\/edit\/(\d+)(?:\b|\/|$)/i);
+  if (workItemUrlMatch) {
+    const parsed = Number(workItemUrlMatch[1]);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
@@ -51,6 +58,7 @@ const parseIssueNumber = (value: string): number | null => {
 };
 
 const buildIssueContextText = (args: {
+  provider: GitProviderId;
   repo: GitHubIssuesListResult['repo'] | undefined;
   issue: GitHubIssue;
   comments: GitHubIssueComment[];
@@ -60,7 +68,15 @@ const buildIssueContextText = (args: {
     issue: args.issue,
     comments: args.comments,
   };
-  return `GitHub issue context (JSON)\n${JSON.stringify(payload, null, 2)}`;
+  const heading = args.provider === 'azure-devops'
+    ? 'Azure DevOps work item context (JSON)'
+    : 'GitHub issue context (JSON)';
+  return `${heading}\n${JSON.stringify(payload, null, 2)}`;
+};
+
+const isAzureDevOpsRemote = (remote: GitRemote | null | undefined): boolean => {
+  const url = `${remote?.fetchUrl || ''} ${remote?.pushUrl || ''}`.toLowerCase();
+  return url.includes('dev.azure.com') || url.includes('visualstudio.com') || url.includes('ssh.dev.azure.com');
 };
 
 export function GitHubIssuePickerDialog({
@@ -75,9 +91,11 @@ export function GitHubIssuePickerDialog({
   onSelect?: (issue: { number: number; title: string; url: string; contextText: string; author?: { login: string; avatarUrl?: string } }) => void;
 }) {
   const { t } = useI18n();
-  const { github } = useRuntimeAPIs();
+  const { github, azureDevOps, git } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
+  const azureDevOpsAuthStatus = useAzureDevOpsAuthStore((state) => state.status);
+  const azureDevOpsAuthChecked = useAzureDevOpsAuthStore((state) => state.hasChecked);
   const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
   const setSettingsPage = useUIStore((state) => state.setSettingsPage);
   const isMobile = useUIStore((state) => state.isMobile);
@@ -92,6 +110,7 @@ export function GitHubIssuePickerDialog({
 
   const [query, setQuery] = React.useState('');
   const [createInWorktree, setCreateInWorktree] = React.useState(false);
+  const [provider, setProvider] = React.useState<GitProviderId>('github');
   const [result, setResult] = React.useState<GitHubIssuesListResult | null>(null);
   const [issues, setIssues] = React.useState<GitHubIssueSummary[]>([]);
   const [page, setPage] = React.useState(1);
@@ -101,13 +120,33 @@ export function GitHubIssuePickerDialog({
   const [isLoadingMore, setIsLoadingMore] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const copyKey = React.useCallback((suffix: string) => {
+    return `${provider === 'azure-devops' ? 'session.azureDevOpsIssuePicker' : 'session.githubIssuePicker'}.${suffix}`;
+  }, [provider]);
+  const tp = React.useCallback((suffix: string, values?: Record<string, string | number>) => {
+    return t(copyKey(suffix) as never, values as never);
+  }, [copyKey, t]);
+
+  const resolveProvider = React.useCallback(async (): Promise<GitProviderId> => {
+    if (!projectDirectory || !git?.getRemotes) {
+      return 'github';
+    }
+    const remotes = await git.getRemotes(projectDirectory).catch(() => []);
+    return remotes.some((remote) => isAzureDevOpsRemote(remote)) ? 'azure-devops' : 'github';
+  }, [git, projectDirectory]);
+
   const refresh = React.useCallback(async () => {
     if (!projectDirectory) {
       setResult(null);
-      setError(t('session.githubIssuePicker.error.noActiveProject'));
+      setError(tp('error.noActiveProject'));
       return;
     }
-    if (githubAuthChecked && githubAuthStatus?.connected === false) {
+    const nextProvider = await resolveProvider();
+    setProvider(nextProvider);
+    const runtime = nextProvider === 'azure-devops' ? azureDevOps : github;
+    const authChecked = nextProvider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
+    const authStatus = nextProvider === 'azure-devops' ? azureDevOpsAuthStatus : githubAuthStatus;
+    if (authChecked && authStatus?.connected === false) {
       setResult({ connected: false });
       setIssues([]);
       setHasMore(false);
@@ -115,16 +154,16 @@ export function GitHubIssuePickerDialog({
       setError(null);
       return;
     }
-    if (!github?.issuesList) {
+    if (!runtime?.issuesList) {
       setResult(null);
-      setError(t('session.githubIssuePicker.error.runtimeUnavailable'));
+      setError(tp('error.runtimeUnavailable'));
       return;
     }
 
     setIsLoading(true);
     setError(null);
     try {
-      const next = await github.issuesList(projectDirectory, { page: 1 });
+      const next = await runtime.issuesList(projectDirectory, { page: 1 });
       setResult(next);
       setIssues(next.issues ?? []);
       setPage(next.page ?? 1);
@@ -137,29 +176,31 @@ export function GitHubIssuePickerDialog({
     } finally {
       setIsLoading(false);
     }
-  }, [github, githubAuthChecked, githubAuthStatus, projectDirectory, t]);
+  }, [azureDevOps, azureDevOpsAuthChecked, azureDevOpsAuthStatus, github, githubAuthChecked, githubAuthStatus, projectDirectory, resolveProvider, tp]);
 
   const loadMore = React.useCallback(async () => {
     if (!projectDirectory) return;
-    if (!github?.issuesList) return;
     if (isLoadingMore || isLoading) return;
     if (!hasMore) return;
+
+    const runtime = provider === 'azure-devops' ? azureDevOps : github;
+    if (!runtime?.issuesList) return;
 
     setIsLoadingMore(true);
     try {
       const nextPage = page + 1;
-      const next = await github.issuesList(projectDirectory, { page: nextPage });
+      const next = await runtime.issuesList(projectDirectory, { page: nextPage });
       setResult(next);
       setIssues((prev) => [...prev, ...(next.issues ?? [])]);
       setPage(next.page ?? nextPage);
       setHasMore(Boolean(next.hasMore));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      toast.error(t('session.githubIssuePicker.toast.loadMoreFailed'), { description: message });
+      toast.error(tp('toast.loadMoreFailed'), { description: message });
     } finally {
       setIsLoadingMore(false);
     }
-  }, [github, hasMore, isLoading, isLoadingMore, page, projectDirectory, t]);
+  }, [azureDevOps, github, hasMore, isLoading, isLoadingMore, page, projectDirectory, provider, tp]);
 
   React.useEffect(() => {
     if (!open) {
@@ -179,20 +220,23 @@ export function GitHubIssuePickerDialog({
 
   React.useEffect(() => {
     if (!open) return;
-    if (githubAuthChecked && githubAuthStatus?.connected === false) {
+    const authChecked = provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
+    const authStatus = provider === 'azure-devops' ? azureDevOpsAuthStatus : githubAuthStatus;
+    if (authChecked && authStatus?.connected === false) {
       setResult({ connected: false });
       setIssues([]);
       setHasMore(false);
       setPage(1);
       setError(null);
     }
-  }, [githubAuthChecked, githubAuthStatus, open]);
+  }, [azureDevOpsAuthChecked, azureDevOpsAuthStatus, githubAuthChecked, githubAuthStatus, open, provider]);
 
-  const connected = githubAuthChecked ? result?.connected !== false : true;
+  const authChecked = provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
+  const connected = authChecked ? result?.connected !== false : true;
   const repoUrl = result?.repo?.url ?? null;
 
-  const openGitHubSettings = React.useCallback(() => {
-    setSettingsPage('github');
+  const openProviderSettings = React.useCallback(() => {
+    setSettingsPage('git');
     setSettingsDialogOpen(true);
   }, [setSettingsDialogOpen, setSettingsPage]);
 
@@ -270,47 +314,56 @@ export function GitHubIssuePickerDialog({
     if (mode === 'select') {
       // In select mode, fetch full issue details and return via onSelect
       if (!projectDirectory) {
-        toast.error(t('session.githubIssuePicker.error.noActiveProject'));
+        toast.error(tp('error.noActiveProject'));
         return;
       }
-      if (!github?.issueGet || !github?.issueComments) {
-        toast.error(t('session.githubIssuePicker.error.runtimeUnavailable'));
+      if (provider === 'azure-devops') {
+        if (!azureDevOps?.issueGet || !azureDevOps?.issueComments) {
+          toast.error(tp('error.runtimeUnavailable'));
+          return;
+        }
+      } else if (!github?.issueGet || !github?.issueComments) {
+        toast.error(tp('error.runtimeUnavailable'));
         return;
       }
       if (startingIssueNumber) return;
       setStartingIssueNumber(issueNumber);
       try {
-        const issueRes = await github.issueGet(projectDirectory, issueNumber, { sourceRepo });
+        const issueRes = provider === 'azure-devops'
+          ? await azureDevOps!.issueGet(projectDirectory, issueNumber)
+          : await github!.issueGet(projectDirectory, issueNumber, { sourceRepo });
         if (issueRes.connected === false) {
-          toast.error(t('session.githubIssuePicker.error.notConnected'));
+          toast.error(tp('error.notConnected'));
           return;
         }
         if (!issueRes.repo) {
-          toast.error(t('session.githubIssuePicker.error.repoNotResolvable'), {
-            description: t('session.githubIssuePicker.error.repoMustBeGithub'),
+          toast.error(tp('error.repoNotResolvable'), {
+            description: tp('error.repoMustMatchProvider'),
           });
           return;
         }
         const issue = issueRes.issue;
         if (!issue) {
-          toast.error(t('session.githubIssuePicker.error.issueNotFound'));
+          toast.error(tp('error.issueNotFound'));
           return;
         }
 
-        const commentsRes = await github.issueComments(projectDirectory, issueNumber, { sourceRepo });
+        const commentsRes = provider === 'azure-devops'
+          ? await azureDevOps!.issueComments(projectDirectory, issueNumber)
+          : await github!.issueComments(projectDirectory, issueNumber, { sourceRepo });
         if (commentsRes.connected === false) {
-          toast.error(t('session.githubIssuePicker.error.notConnected'));
+          toast.error(tp('error.notConnected'));
           return;
         }
         const comments = commentsRes.comments ?? [];
 
         // Build full context text like in createSession mode
-        const contextText = buildIssueContextText({ repo: issueRes.repo, issue, comments });
+        const contextText = buildIssueContextText({ provider, repo: issueRes.repo, issue, comments });
 
         if (onSelect) {
-          onSelect({ 
-            number: issue.number, 
-            title: issue.title, 
+          onSelect({
+            number: issue.number,
+            title: issue.title,
             url: issue.url,
             contextText,
             author: issue.author ? {
@@ -322,7 +375,7 @@ export function GitHubIssuePickerDialog({
         onOpenChange(false);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        toast.error(t('session.githubIssuePicker.toast.loadIssueDetailsFailed'), { description: message });
+        toast.error(tp('toast.loadIssueDetailsFailed'), { description: message });
       } finally {
         setStartingIssueNumber(null);
       }
@@ -330,36 +383,45 @@ export function GitHubIssuePickerDialog({
     }
 
     if (!projectDirectory) {
-      toast.error(t('session.githubIssuePicker.error.noActiveProject'));
+      toast.error(tp('error.noActiveProject'));
       return;
     }
-    if (!github?.issueGet || !github?.issueComments) {
-      toast.error(t('session.githubIssuePicker.error.runtimeUnavailable'));
+    if (provider === 'azure-devops') {
+      if (!azureDevOps?.issueGet || !azureDevOps?.issueComments) {
+        toast.error(tp('error.runtimeUnavailable'));
+        return;
+      }
+    } else if (!github?.issueGet || !github?.issueComments) {
+      toast.error(tp('error.runtimeUnavailable'));
       return;
     }
     if (startingIssueNumber) return;
     setStartingIssueNumber(issueNumber);
     try {
-      const issueRes = await github.issueGet(projectDirectory, issueNumber, { sourceRepo });
+      const issueRes = provider === 'azure-devops'
+        ? await azureDevOps!.issueGet(projectDirectory, issueNumber)
+        : await github!.issueGet(projectDirectory, issueNumber, { sourceRepo });
       if (issueRes.connected === false) {
-        toast.error(t('session.githubIssuePicker.error.notConnected'));
+        toast.error(tp('error.notConnected'));
         return;
       }
       if (!issueRes.repo) {
-        toast.error(t('session.githubIssuePicker.error.repoNotResolvable'), {
-          description: t('session.githubIssuePicker.error.repoMustBeGithub'),
+        toast.error(tp('error.repoNotResolvable'), {
+          description: tp('error.repoMustMatchProvider'),
         });
         return;
       }
       const issue = issueRes.issue;
       if (!issue) {
-        toast.error(t('session.githubIssuePicker.error.issueNotFound'));
+        toast.error(tp('error.issueNotFound'));
         return;
       }
 
-      const commentsRes = await github.issueComments(projectDirectory, issueNumber, { sourceRepo });
+      const commentsRes = provider === 'azure-devops'
+        ? await azureDevOps!.issueComments(projectDirectory, issueNumber)
+        : await github!.issueComments(projectDirectory, issueNumber, { sourceRepo });
       if (commentsRes.connected === false) {
-        toast.error(t('session.githubIssuePicker.error.notConnected'));
+        toast.error(tp('error.notConnected'));
         return;
       }
       const comments = commentsRes.comments ?? [];
@@ -406,7 +468,7 @@ export function GitHubIssuePickerDialog({
       const modelID = defaultModel?.modelID || configState.currentModelId || lastUsedProvider?.modelID;
       const agentName = resolveDefaultAgentName() || configState.currentAgentName || undefined;
       if (!providerID || !modelID) {
-        toast.error(t('session.githubIssuePicker.error.noModelSelected'));
+        toast.error(tp('error.noModelSelected'));
         return;
       }
 
@@ -455,7 +517,7 @@ export function GitHubIssuePickerDialog({
         issue_number: String(issue.number),
       });
       const instructionsText = await renderMagicPrompt('github.issue.review.instructions');
-      const contextText = buildIssueContextText({ repo: issueRes.repo, issue, comments });
+      const contextText = buildIssueContextText({ provider, repo: issueRes.repo, issue, comments });
 
       void opencodeClient.sendMessage({
         id: sessionId,
@@ -471,31 +533,31 @@ export function GitHubIssuePickerDialog({
         directory: sessionDirectory,
       }).catch((e) => {
         const message = e instanceof Error ? e.message : String(e);
-        toast.error(t('session.githubIssuePicker.toast.sendContextFailed'), {
+        toast.error(tp('toast.sendContextFailed'), {
           description: message,
         });
       });
 
-      toast.success(t('session.githubIssuePicker.toast.sessionCreated'));
+      toast.success(tp('toast.sessionCreated'));
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      toast.error(t('session.githubIssuePicker.toast.startSessionFailed'), { description: message });
+      toast.error(tp('toast.startSessionFailed'), { description: message });
     } finally {
       setStartingIssueNumber(null);
     }
-  }, [createInWorktree, github, mode, onOpenChange, onSelect, projectDirectory, resolveDefaultAgentName, resolveDefaultModelSelection, resolveDefaultVariant, startingIssueNumber, t]);
+  }, [azureDevOps, createInWorktree, github, mode, onOpenChange, onSelect, projectDirectory, provider, resolveDefaultAgentName, resolveDefaultModelSelection, resolveDefaultVariant, startingIssueNumber, tp]);
 
-  const title = mode === 'select' ? t('session.githubIssuePicker.title.select') : t('session.githubIssuePicker.title.createSession');
+  const title = mode === 'select' ? tp('title.select') : tp('title.createSession');
   const description = mode === 'select'
-    ? t('session.githubIssuePicker.description.select')
-    : t('session.githubIssuePicker.description.createSession');
+    ? tp('description.select')
+    : tp('description.createSession');
 
   const content = (
     <>
       <div className="relative mt-2">
         <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
-          placeholder={t('session.githubIssuePicker.searchPlaceholder')}
+          placeholder={tp('searchPlaceholder')}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           className="pl-9 w-full"
@@ -504,26 +566,26 @@ export function GitHubIssuePickerDialog({
 
       <div className={cn(isMobile ? 'min-h-0 mt-2' : 'flex-1 overflow-y-auto mt-2')}>
           {!projectDirectory ? (
-            <div className="text-center text-muted-foreground py-8">{t('session.githubIssuePicker.empty.noActiveProject')}</div>
+            <div className="text-center text-muted-foreground py-8">{tp('empty.noActiveProject')}</div>
           ) : null}
 
-          {!github ? (
-            <div className="text-center text-muted-foreground py-8">{t('session.githubIssuePicker.empty.runtimeUnavailable')}</div>
+          {!(provider === 'azure-devops' ? azureDevOps : github) ? (
+            <div className="text-center text-muted-foreground py-8">{tp('empty.runtimeUnavailable')}</div>
           ) : null}
 
           {isLoading ? (
             <div className="text-center text-muted-foreground py-8 flex items-center justify-center gap-2">
               <Icon name="loader-4" className="h-4 w-4 animate-spin" />
-              {t('session.githubIssuePicker.loading.issues')}
+              {tp('loading.issues')}
             </div>
           ) : null}
 
           {connected === false ? (
             <div className="text-center text-muted-foreground py-8 space-y-3">
-              <div>{t('session.githubIssuePicker.empty.notConnected')}</div>
+              <div>{tp('empty.notConnected')}</div>
               <div className="flex justify-center">
-                <Button variant="outline" size="sm" onClick={openGitHubSettings}>
-                  {t('session.githubIssuePicker.actions.openSettings')}
+                <Button variant="outline" size="sm" onClick={openProviderSettings}>
+                  {tp('actions.openSettings')}
                 </Button>
               </div>
             </div>
@@ -533,7 +595,7 @@ export function GitHubIssuePickerDialog({
             <div className="text-center text-muted-foreground py-8 break-words">{error}</div>
           ) : null}
 
-          {directNumber && projectDirectory && github && connected ? (
+          {directNumber && projectDirectory && (provider === 'azure-devops' ? azureDevOps : github) && connected ? (
             <div
               className={cn(
                 'group flex items-center gap-2 py-1.5 hover:bg-interactive-hover/30 rounded transition-colors cursor-pointer',
@@ -542,9 +604,9 @@ export function GitHubIssuePickerDialog({
               onClick={() => void startSession(directNumber)}
             >
               <span className="typography-meta text-muted-foreground w-5 text-right flex-shrink-0">#</span>
-              <p className="flex-1 min-w-0 typography-small text-foreground truncate ml-0.5">
-                {t('session.githubIssuePicker.actions.useIssue', { number: directNumber })}
-              </p>
+                <p className="flex-1 min-w-0 typography-small text-foreground truncate ml-0.5">
+                  {tp('actions.useIssue', { number: directNumber })}
+                </p>
               <div className="flex-shrink-0 h-5 flex items-center mr-2">
                 {startingIssueNumber === directNumber ? (
                   <Icon name="loader-4" className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -553,8 +615,8 @@ export function GitHubIssuePickerDialog({
             </div>
           ) : null}
 
-          {filtered.length === 0 && !isLoading && connected && github && projectDirectory ? (
-            <div className="text-center text-muted-foreground py-8">{query ? t('session.githubIssuePicker.empty.noIssuesFound') : t('session.githubIssuePicker.empty.noOpenIssuesFound')}</div>
+          {filtered.length === 0 && !isLoading && connected && (provider === 'azure-devops' ? azureDevOps : github) && projectDirectory ? (
+            <div className="text-center text-muted-foreground py-8">{query ? tp('empty.noIssuesFound') : tp('empty.noOpenIssuesFound')}</div>
           ) : null}
 
           {filtered.map((issue) => (
@@ -593,8 +655,8 @@ export function GitHubIssuePickerDialog({
                       alwaysShowActions ? "flex" : "hidden group-hover:flex"
                     )}
                     onClick={(e) => e.stopPropagation()}
-                    aria-label={t('session.githubIssuePicker.actions.openInGitHubAria')}
-                  >
+                     aria-label={tp('actions.openInProviderAria')}
+                   >
                     <Icon name="external-link" className="h-4 w-4" />
                   </a>
                 )}
@@ -602,7 +664,7 @@ export function GitHubIssuePickerDialog({
             </div>
           ))}
 
-          {hasMore && connected && projectDirectory && github ? (
+          {hasMore && connected && projectDirectory && (provider === 'azure-devops' ? azureDevOps : github) ? (
             <div className="py-2 flex justify-center">
               <button
                 type="button"
@@ -615,20 +677,20 @@ export function GitHubIssuePickerDialog({
               >
                 {isLoadingMore ? (
                   <span className="inline-flex items-center gap-2">
-                    <Icon name="loader-4" className="h-4 w-4 animate-spin" />
-                    {t('session.githubIssuePicker.loading.more')}
-                  </span>
-                ) : (
-                  t('session.githubIssuePicker.actions.loadMore')
-                )}
-              </button>
-            </div>
+                     <Icon name="loader-4" className="h-4 w-4 animate-spin" />
+                     {tp('loading.more')}
+                   </span>
+                 ) : (
+                   tp('actions.loadMore')
+                 )}
+               </button>
+             </div>
           ) : null}
       </div>
 
       {mode !== 'select' && (
         <div className="mt-4 p-3 bg-muted/30 rounded-lg">
-          <p className="typography-meta text-muted-foreground font-medium mb-2">{t('session.githubIssuePicker.actions.sectionTitle')}</p>
+          <p className="typography-meta text-muted-foreground font-medium mb-2">{tp('actions.sectionTitle')}</p>
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-2">
             <div
               className="flex items-center gap-2 cursor-pointer"
@@ -650,8 +712,8 @@ export function GitHubIssuePickerDialog({
                   e.stopPropagation();
                   setCreateInWorktree((v) => !v);
                 }}
-                aria-label={t('session.githubIssuePicker.actions.toggleWorktreeAria')}
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                 aria-label={tp('actions.toggleWorktreeAria')}
+                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 {createInWorktree ? (
                   <Icon name="checkbox" className="h-4 w-4 text-primary" />
@@ -659,7 +721,7 @@ export function GitHubIssuePickerDialog({
                   <Icon name="checkbox-blank" className="h-4 w-4" />
                 )}
               </button>
-              <span className="typography-meta text-muted-foreground">{t('session.githubIssuePicker.actions.createInWorktree')}</span>
+               <span className="typography-meta text-muted-foreground">{tp('actions.createInWorktree')}</span>
               <span className="typography-meta text-muted-foreground/70 hidden sm:inline">(issue-&lt;number&gt;-&lt;slug&gt;)</span>
             </div>
             <div className="hidden sm:block sm:flex-1" />
@@ -667,15 +729,15 @@ export function GitHubIssuePickerDialog({
               {repoUrl ? (
                 <Button variant="outline" size="sm" asChild>
                   <a href={repoUrl} target="_blank" rel="noopener noreferrer">
-                    <Icon name="external-link" className="size-4" />
-                    {t('session.githubIssuePicker.actions.openRepo')}
-                  </a>
-                </Button>
-              ) : null}
-              <Button variant="outline" size="sm" onClick={refresh} disabled={isLoading || Boolean(startingIssueNumber)}>
-                {t('session.githubIssuePicker.actions.refresh')}
-              </Button>
-            </div>
+                     <Icon name="external-link" className="size-4" />
+                     {tp('actions.openRepo')}
+                   </a>
+                 </Button>
+               ) : null}
+               <Button variant="outline" size="sm" onClick={refresh} disabled={isLoading || Boolean(startingIssueNumber)}>
+                 {tp('actions.refresh')}
+               </Button>
+             </div>
           </div>
         </div>
       )}
@@ -708,7 +770,7 @@ export function GitHubIssuePickerDialog({
       <DialogContent className="max-w-2xl max-h-[70vh] flex flex-col">
         <DialogHeader className="flex-shrink-0">
           <DialogTitle className="flex items-center gap-2">
-            <Icon name="github" className="h-5 w-5" />
+            <Icon name={provider === 'azure-devops' ? 'git-repository' : 'github'} className="h-5 w-5" />
             {title}
           </DialogTitle>
           <DialogDescription>

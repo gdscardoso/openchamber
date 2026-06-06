@@ -2,10 +2,19 @@ import type {
   AzureDevOpsAPI,
   AzureDevOpsAuthStatus,
   AzureDevOpsConnectInput,
+  AzureDevOpsRepoUpstream,
   AzureDevOpsUserSummary,
+  GitHubIssueCommentsResult,
+  GitHubIssueGetResult,
+  GitHubIssuesListResult,
   GitHubPullRequest,
   GitHubPullRequestContextResult,
   GitHubPullRequestCreateInput,
+  GitHubPullRequestMergeInput,
+  GitHubPullRequestMergeResult,
+  GitHubPullRequestReadyInput,
+  GitHubPullRequestReadyResult,
+  GitHubPullRequestsListResult,
   GitHubPullRequestUpdateInput,
   GitHubPullRequestStatus,
 } from '@openchamber/ui/lib/api/types';
@@ -110,6 +119,44 @@ export const createWebAzureDevOpsAPI = (): AzureDevOpsAPI => ({
     return body;
   },
 
+  async prMerge(payload: GitHubPullRequestMergeInput): Promise<GitHubPullRequestMergeResult> {
+    const response = await runtimeFetch('/api/azure-devops/pr/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await jsonOrNull<GitHubPullRequestMergeResult & { error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to complete Azure DevOps PR');
+    }
+    return body;
+  },
+
+  async prReady(payload: GitHubPullRequestReadyInput): Promise<GitHubPullRequestReadyResult> {
+    const response = await runtimeFetch('/api/azure-devops/pr/ready', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const body = await jsonOrNull<GitHubPullRequestReadyResult & { error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to mark Azure DevOps PR ready');
+    }
+    return body;
+  },
+
+  async prsList(directory: string, options?: { page?: number; remote?: string }): Promise<GitHubPullRequestsListResult> {
+    const params = new URLSearchParams({ directory });
+    if (options?.page) params.set('page', String(options.page));
+    if (options?.remote) params.set('remote', options.remote);
+    const response = await runtimeFetch(`/api/azure-devops/pulls/list?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = await jsonOrNull<GitHubPullRequestsListResult & { error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to list Azure DevOps pull requests');
+    }
+    return body;
+  },
+
   async prContext(
     directory: string,
     number: number,
@@ -123,6 +170,61 @@ export const createWebAzureDevOpsAPI = (): AzureDevOpsAPI => ({
     const body = await jsonOrNull<GitHubPullRequestContextResult & { error?: string }>(response);
     if (!response.ok || !body) {
       throw new Error(body?.error || response.statusText || 'Failed to load Azure DevOps pull request context');
+    }
+    return body;
+  },
+
+  async issuesList(directory: string, options?: { page?: number; remote?: string }): Promise<GitHubIssuesListResult> {
+    const params = new URLSearchParams({ directory });
+    if (options?.page) params.set('page', String(options.page));
+    if (options?.remote) params.set('remote', options.remote);
+    const response = await runtimeFetch(`/api/azure-devops/issues/list?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = await jsonOrNull<GitHubIssuesListResult & { error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to list Azure DevOps work items');
+    }
+    return body;
+  },
+
+  async issueGet(directory: string, number: number, options?: { remote?: string }): Promise<GitHubIssueGetResult> {
+    const params = new URLSearchParams({ directory, number: String(number) });
+    if (options?.remote) params.set('remote', options.remote);
+    const response = await runtimeFetch(`/api/azure-devops/issues/get?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = await jsonOrNull<GitHubIssueGetResult & { error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to load Azure DevOps work item');
+    }
+    return body;
+  },
+
+  async issueComments(directory: string, number: number, options?: { remote?: string }): Promise<GitHubIssueCommentsResult> {
+    const params = new URLSearchParams({ directory, number: String(number) });
+    if (options?.remote) params.set('remote', options.remote);
+    const response = await runtimeFetch(`/api/azure-devops/issues/comments?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = await jsonOrNull<GitHubIssueCommentsResult & { error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to load Azure DevOps work item comments');
+    }
+    return body;
+  },
+
+  async repoBranches(directory: string, remote?: string): Promise<string[]> {
+    const params = new URLSearchParams({ directory });
+    if (remote) params.set('remote', remote);
+    const response = await runtimeFetch(`/api/azure-devops/repo/branches?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = await jsonOrNull<{ branches?: string[]; error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to fetch Azure DevOps repo branches');
+    }
+    return body.branches ?? [];
+  },
+
+  async repoUpstream(directory: string): Promise<{ connected: boolean; isFork: boolean; upstream: AzureDevOpsRepoUpstream | null }> {
+    const params = new URLSearchParams({ directory });
+    const response = await runtimeFetch(`/api/azure-devops/repo/upstream?${params.toString()}`, { method: 'GET', headers: { Accept: 'application/json' } });
+    const body = await jsonOrNull<{ connected: boolean; isFork: boolean; upstream: AzureDevOpsRepoUpstream | null; error?: string }>(response);
+    if (!response.ok || !body) {
+      throw new Error(body?.error || response.statusText || 'Failed to detect Azure DevOps upstream repo');
     }
     return body;
   },
