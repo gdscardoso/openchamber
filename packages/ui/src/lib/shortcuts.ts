@@ -215,6 +215,20 @@ const SHORTCUT_ACTIONS: ReadonlyArray<ShortcutAction> = [
     customizable: true,
   },
   {
+    id: 'create_task',
+    defaultCombo: 'mod+shift+i',
+    label: 'New task',
+    description: 'Open task creation dialog',
+    customizable: true,
+  },
+  {
+    id: 'toggle_task_manager',
+    defaultCombo: 'mod+shift+k',
+    label: 'Toggle task manager',
+    description: 'Open or close task manager',
+    customizable: true,
+  },
+  {
     id: 'new_mini_chat',
     defaultCombo: 'mod+alt+n',
     label: 'New Mini Chat window',

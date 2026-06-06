@@ -23,6 +23,7 @@ import { SkillsSidebar } from '@/components/sections/skills/SkillsSidebar';
 import { SkillsPage } from '@/components/sections/skills/SkillsPage';
 import { ProjectsSidebar } from '@/components/sections/projects/ProjectsSidebar';
 import { ProjectsPage } from '@/components/sections/projects/ProjectsPage';
+import { WorkspacesSection } from '@/components/sections/workspaces';
 import { RemoteInstancesPage } from '@/components/sections/remote-instances/RemoteInstancesPage';
 import { ProvidersSidebar } from '@/components/sections/providers/ProvidersSidebar';
 import { ProvidersPage } from '@/components/sections/providers/ProvidersPage';
@@ -86,6 +87,7 @@ const pageOrder: SettingsPageSlug[] = [
   'magic-prompts',
   'snippets',
   'projects',
+  'workspaces',
   'remote-instances',
   'agents',
   'behavior',
@@ -151,6 +153,8 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): IconName | null {
   switch (slug) {
     case 'projects':
       return 'folders';
+    case 'workspaces':
+      return 'task';
     case 'remote-instances':
       return 'server';
     case 'appearance':
@@ -452,6 +456,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     switch (slug) {
       case 'projects':
         return t('settings.page.projects.title');
+      case 'workspaces':
+        return t('settings.page.workspaces.title');
       case 'remote-instances':
         return t('settings.page.remoteInstances.title');
       case 'providers':
@@ -547,6 +553,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return <SettingsHome onOpen={openPage} />;
       case 'projects':
         return <ProjectsPage />;
+      case 'workspaces':
+        return <WorkspacesSection />;
       case 'remote-instances':
         return <RemoteInstancesPage />;
       case 'agents':

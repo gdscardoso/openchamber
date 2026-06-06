@@ -1,10 +1,12 @@
 import React from 'react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { toast } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useWorkspacesStore } from '@/stores/useWorkspacesStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { PROJECT_COLORS, PROJECT_ICONS, PROJECT_COLOR_MAP as COLOR_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { WorktreeSectionContent } from '@/components/sections/openchamber/WorktreeSectionContent';
@@ -20,6 +22,10 @@ export const ProjectsPage: React.FC = () => {
   const uploadProjectIcon = useProjectsStore((state) => state.uploadProjectIcon);
   const removeProjectIcon = useProjectsStore((state) => state.removeProjectIcon);
   const discoverProjectIcon = useProjectsStore((state) => state.discoverProjectIcon);
+  const workspaces = useWorkspacesStore((state) => state.workspaces);
+  const isLoadingWorkspaces = useWorkspacesStore((state) => state.isLoading);
+  const loadWorkspaces = useWorkspacesStore((state) => state.loadWorkspaces);
+  const updateWorkspace = useWorkspacesStore((state) => state.updateWorkspace);
   const selectedId = useUIStore((state) => state.settingsProjectsSelectedId);
   const setSelectedId = useUIStore((state) => state.setSettingsProjectsSelectedId);
   const { currentTheme } = useThemeSystem();
@@ -39,6 +45,10 @@ export const ProjectsPage: React.FC = () => {
     }
     setSelectedId(projects[0].id);
   }, [projects, selectedId, setSelectedId]);
+
+  React.useEffect(() => {
+    void loadWorkspaces();
+  }, [loadWorkspaces]);
 
   const [name, setName] = React.useState('');
   const [icon, setIcon] = React.useState<string | null>(null);
@@ -162,6 +172,27 @@ export const ProjectsPage: React.FC = () => {
   const hasRemovableImageIcon = effectiveHasImageIcon;
   const showStoredImagePreview = Boolean(selectedProject && hasStoredImageIcon && !pendingRemoveImageIcon);
   const showImagePreview = !previewImageFailed && (hasPendingUploadImageIcon || showStoredImagePreview);
+  const selectedProjectWorkspaceId = React.useMemo(() => {
+    if (!selectedProject) return '';
+    const assigned = workspaces.find((workspace) => workspace.projectIDs.includes(selectedProject.id));
+    return assigned?.id ?? workspaces.find((workspace) => workspace.name === 'Default')?.id ?? workspaces[0]?.id ?? '';
+  }, [selectedProject, workspaces]);
+
+  const handleWorkspaceChange = React.useCallback(async (workspaceId: string) => {
+    if (!selectedProject || !workspaceId || workspaceId === selectedProjectWorkspaceId) {
+      return;
+    }
+    const workspace = workspaces.find((entry) => entry.id === workspaceId);
+    if (!workspace) {
+      return;
+    }
+    try {
+      await updateWorkspace(workspace.id, { projectIDs: Array.from(new Set(workspace.projectIDs.concat(selectedProject.id))) });
+      toast.success(t('settings.projects.page.toast.workspaceUpdated'));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('settings.projects.page.toast.workspaceUpdateFailed'));
+    }
+  }, [selectedProject, selectedProjectWorkspaceId, t, updateWorkspace, workspaces]);
 
   const handleUploadIcon = React.useCallback((file: File | null) => {
     if (!selectedProject || !file || isUploadingIcon) {
@@ -270,6 +301,26 @@ export const ProjectsPage: React.FC = () => {
                   placeholder={t('settings.projects.page.field.projectNamePlaceholder')} 
                   className="h-7 min-w-0 w-full sm:max-w-[19rem]" 
                 />
+              </div>
+            </div>
+
+            <div className="py-1.5">
+              <div className="flex min-w-0 flex-col">
+                <span className="typography-ui-label text-foreground">{t('settings.projects.page.field.workspace')}</span>
+              </div>
+              <div className="mt-1.5 flex min-w-0 items-center gap-2">
+                <Select value={selectedProjectWorkspaceId} onValueChange={(value) => void handleWorkspaceChange(value)} disabled={isLoadingWorkspaces || workspaces.length === 0}>
+                  <SelectTrigger className="h-7 min-w-0 w-full sm:max-w-[19rem]">
+                    <SelectValue placeholder={t('settings.projects.page.field.workspacePlaceholder')} />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {workspaces.map((workspace) => (
+                      <SelectItem key={workspace.id} value={workspace.id}>
+                        {workspace.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
 

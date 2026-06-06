@@ -3,7 +3,7 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import { toast } from '@/components/ui';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { useI18n } from '@/lib/i18n';
-import type { MainTab } from '@/stores/useUIStore';
+import { useUIStore, type MainTab } from '@/stores/useUIStore';
 
 type DeleteSessionConfirmSetter = React.Dispatch<React.SetStateAction<{
   session: Session;
@@ -83,6 +83,8 @@ export const useSessionActions = (args: Args) => {
       if (args.mobileVariant) {
         args.setActiveMainTab('chat');
         args.setSessionSwitcherOpen(false);
+      } else if (useUIStore.getState().activeMainTab === 'tasks') {
+        args.setActiveMainTab('chat');
       }
 
       if (sessionId === args.currentSessionId) {

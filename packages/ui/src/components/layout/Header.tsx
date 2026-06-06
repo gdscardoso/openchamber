@@ -76,6 +76,7 @@ import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import type { Session } from '@opencode-ai/sdk/v2/client';
 import type { IconName } from "@/components/icon/icons";
+import { useTaskManagerUIStore } from '@/stores/useTaskManagerUIStore';
 
 const DESKTOP_HEADER_ICON_BUTTON_CLASS = 'app-region-no-drag inline-flex h-8 w-8 items-center justify-center gap-2 rounded-md typography-ui-label font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50 hover:bg-interactive-hover transition-colors';
 const MOBILE_HEADER_ICON_BUTTON_CLASS = 'app-region-no-drag inline-flex h-9 w-9 items-center justify-center gap-2 p-2 rounded-md typography-ui-label font-medium text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50 hover:text-foreground hover:bg-interactive-hover transition-colors';
@@ -1724,16 +1725,21 @@ export const Header: React.FC<HeaderProps> = ({
         { id: 'context', label: t('layout.mainTab.context'), icon: "file-list-2" },
       );
 
+      if (!isVSCode) {
+        base.splice(base.length - 1, 0, { id: 'tasks', label: t('layout.mainTab.tasks'), icon: 'task' });
+      }
+
       return base;
     }
 
     // Desktop: no tabs in header
     return [];
-  }, [isMobile, showPlanTab, t]);
+  }, [isMobile, isVSCode, showPlanTab, t]);
 
   const shortcutLabel = React.useCallback((actionId: string) => {
     return formatShortcutForDisplay(getEffectiveShortcutCombo(actionId, shortcutOverrides));
   }, [shortcutOverrides]);
+  const openCreateTaskModal = useTaskManagerUIStore((state) => state.openCreateTaskModal);
 
   useEffect(() => {
     if (!isMobile && (activeMainTab === 'git' || activeMainTab === 'terminal' || activeMainTab === 'diff' || activeMainTab === 'files' || activeMainTab === 'context')) {
@@ -1929,7 +1935,7 @@ export const Header: React.FC<HeaderProps> = ({
     const tabButton = (
       <button
         type="button"
-        onClick={() => setActiveMainTab(tab.id)}
+        onClick={() => setActiveMainTab(tab.id === 'tasks' && activeMainTab === 'tasks' ? 'chat' : tab.id)}
           className={cn(
             'relative flex h-8 items-center gap-2 px-3 rounded-lg typography-ui-label font-medium transition-colors',
             isActive
@@ -2023,6 +2029,23 @@ export const Header: React.FC<HeaderProps> = ({
         onClick={toggleBottomTerminal}
         Icon={'terminal-box'}
       />
+      {!isVSCodeRuntime() ? (
+        <HeaderIconActionButton
+          title={formatShortcutForDisplay(getEffectiveShortcutCombo('create_task', shortcutOverrides))}
+          ariaLabel={t('tasks.header.newTask')}
+          onClick={() => openCreateTaskModal({})}
+          Icon={'add-circle'}
+        />
+      ) : null}
+      {!isVSCodeRuntime() ? (
+        <HeaderIconActionButton
+          title={t('layout.mainTab.tasks')}
+          ariaLabel={t('layout.mainTab.tasks')}
+          onClick={() => setActiveMainTab(activeMainTab === 'tasks' ? 'chat' : 'tasks')}
+          pressed={activeMainTab === 'tasks'}
+          Icon={'task'}
+        />
+      ) : null}
       {!isMobile ? (
         <HeaderIconActionButton
           title={t('contextPanel.browser.open')}

@@ -97,6 +97,12 @@ Scheduled task persistence, execution, and event fanout for recurring sessions.
 
 - Module docs: `packages/web/server/lib/scheduled-tasks/DOCUMENTATION.md`
 
+##### tasks
+
+Workspace-scoped task manager persistence, routes, and SSE fanout.
+
+- Module docs: `packages/web/server/lib/tasks/DOCUMENTATION.md`
+
 ##### text
 
 Text processing helpers shared by server-side routes and summarization flows.

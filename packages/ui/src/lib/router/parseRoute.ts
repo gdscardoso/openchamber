@@ -59,11 +59,22 @@ function parseTab(params: URLSearchParams): MainTab | null {
   }
 
   const normalized = value.toLowerCase().trim() as MainTab;
+  if (normalized === 'tasks' && isVSCodeContext()) {
+    return null;
+  }
   if (VALID_TABS.includes(normalized)) {
     return normalized;
   }
 
   return null;
+}
+
+function isVSCodeContext(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return (window as { __VSCODE_CONFIG__?: unknown }).__VSCODE_CONFIG__ !== undefined;
 }
 
 /**

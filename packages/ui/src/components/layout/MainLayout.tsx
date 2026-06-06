@@ -10,6 +10,7 @@ import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { CommandPalette } from '../ui/CommandPalette';
 import { HelpDialog } from '../ui/HelpDialog';
 import { OpenCodeStatusDialog } from '../ui/OpenCodeStatusDialog';
+import { TaskModalRoot } from '@/components/tasks/TaskModal';
 import { SessionSidebar } from '@/components/session/SessionSidebar';
 import { SessionDialogs } from '@/components/session/SessionDialogs';
 import { DiffWorkerProvider } from '@/contexts/DiffWorkerProvider';
@@ -34,6 +35,7 @@ const TerminalView = lazyWithChunkRecovery(() => import('@/components/views/Term
 const SettingsView = lazyWithChunkRecovery(() => import('@/components/views/SettingsView').then(m => ({ default: m.SettingsView })));
 const SettingsWindow = lazyWithChunkRecovery(() => import('@/components/views/SettingsWindow').then(m => ({ default: m.SettingsWindow })));
 const MultiRunWindow = lazyWithChunkRecovery(() => import('@/components/views/MultiRunWindow').then(m => ({ default: m.MultiRunWindow })));
+const TaskManagerView = lazyWithChunkRecovery(() => import('@/components/views/TaskManagerView').then(m => ({ default: m.TaskManagerView })));
 
 const DESKTOP_SIDEBAR_MIN_WIDTH = 280;
 const DESKTOP_SIDEBAR_MAX_WIDTH = 500;
@@ -408,6 +410,8 @@ export const MainLayout: React.FC = () => {
                 return <React.Suspense fallback={null}><FilesView /></React.Suspense>;
             case 'context':
                 return <React.Suspense fallback={null}><ProjectContextPanel /></React.Suspense>;
+            case 'tasks':
+                return <React.Suspense fallback={null}><TaskManagerView /></React.Suspense>;
             default:
                 return null;
         }
@@ -436,6 +440,7 @@ export const MainLayout: React.FC = () => {
                 <CommandPalette />
                 <HelpDialog />
                 <OpenCodeStatusDialog />
+                <TaskModalRoot />
                 <SessionDialogs />
 
                 {isMobile ? (

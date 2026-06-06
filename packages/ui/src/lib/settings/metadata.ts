@@ -3,6 +3,7 @@ import type { SidebarSection } from '@/constants/sidebar';
 export type SettingsPageSlug =
   | 'home'
   | 'projects'
+  | 'workspaces'
   | 'remote-instances'
   | 'providers'
   | 'usage'
@@ -76,6 +77,14 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     group: 'projects',
     kind: 'split',
     keywords: ['project', 'projects', 'worktree', 'worktrees', 'repo', 'repository', 'directory'],
+  },
+  {
+    slug: 'workspaces',
+    title: 'Workspaces',
+    group: 'projects',
+    kind: 'single',
+    keywords: ['workspace', 'workspaces', 'tasks', 'task manager', 'organization'],
+    isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
     slug: 'remote-instances',

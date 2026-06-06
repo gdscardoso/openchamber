@@ -40,6 +40,7 @@ import { truncatePathMiddle } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useTaskManagerUIStore } from '@/stores/useTaskManagerUIStore';
 
 type CommandEntry = {
   id: string;
@@ -79,6 +80,7 @@ export const CommandPalette: React.FC = () => {
   const openContextOverview = useUIStore((s) => s.openContextOverview);
   const openContextFile = useUIStore((s) => s.openContextFile);
   const shortcutOverrides = useUIStore((s) => s.shortcutOverrides);
+  const openCreateTaskModal = useTaskManagerUIStore((s) => s.openCreateTaskModal);
 
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
   const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
@@ -224,6 +226,31 @@ export const CommandPalette: React.FC = () => {
         onSelect: run(() => setSettingsDialogOpen(true)),
       },
     ];
+    if (!isVSCodeRuntime()) {
+      list.push(
+        {
+          id: 'new-task',
+          title: t('tasks.header.newTask'),
+          icon: <Icon name="add-circle" className="mr-2 h-4 w-4" />,
+          shortcutId: 'create_task',
+          searchText: t('tasks.header.newTask'),
+          onSelect: run(() => {
+            openCreateTaskModal({ projectId: activeProject?.id ?? null, sessionId: useSessionUIStore.getState().currentSessionId });
+          }),
+        },
+        {
+          id: 'open-task-manager',
+          title: t('layout.mainTab.tasks'),
+          icon: <Icon name="task" className="mr-2 h-4 w-4" />,
+          shortcutId: 'toggle_task_manager',
+          searchText: t('layout.mainTab.tasks'),
+          onSelect: run(() => {
+            const { activeMainTab } = useUIStore.getState();
+            setActiveMainTab(activeMainTab === 'tasks' ? 'chat' : 'tasks');
+          }),
+        },
+      );
+    }
     if (canUseElectronDesktopIPC()) {
       list.splice(1, 0, {
         id: 'new-mini-chat',
@@ -255,6 +282,7 @@ export const CommandPalette: React.FC = () => {
     currentDirectory,
     openContextOverview,
     setSettingsDialogOpen,
+    openCreateTaskModal,
     activeProject?.id,
     activeProject?.path,
   ]);

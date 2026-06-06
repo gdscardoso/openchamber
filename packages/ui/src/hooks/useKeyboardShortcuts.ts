@@ -13,6 +13,7 @@ import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from 
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { getCycledPrimaryAgentName } from '@/components/chat/mobileControlsUtils';
+import { useTaskManagerUIStore } from '@/stores/useTaskManagerUIStore';
 
 export const useKeyboardShortcuts = () => {
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
@@ -38,6 +39,7 @@ export const useKeyboardShortcuts = () => {
   const shortcutOverrides = useUIStore((s) => s.shortcutOverrides);
   const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
   const activeProject = useProjectsStore((s) => s.getActiveProject());
+  const openCreateTaskModal = useTaskManagerUIStore((s) => s.openCreateTaskModal);
   const { themeMode, setThemeMode } = useThemeSystem();
   const { working } = useAssistantStatus();
   const abortPrimedUntilRef = React.useRef<number | null>(null);
@@ -179,6 +181,23 @@ export const useKeyboardShortcuts = () => {
         }
 
         openNewSessionDraft();
+        return;
+      }
+
+      if (!isVSCodeRuntime() && eventMatchesShortcut(e, combo('create_task'))) {
+        e.preventDefault();
+        openCreateTaskModal({
+          projectId: activeProject?.id ?? null,
+          branch: null,
+          sessionId: currentSessionId,
+        });
+        return;
+      }
+
+      if (!isVSCodeRuntime() && eventMatchesShortcut(e, combo('toggle_task_manager'))) {
+        e.preventDefault();
+        const { activeMainTab } = useUIStore.getState();
+        setActiveMainTab(activeMainTab === 'tasks' ? 'chat' : 'tasks');
         return;
       }
 
@@ -586,6 +605,7 @@ export const useKeyboardShortcuts = () => {
     currentDirectory,
     activeProject?.id,
     activeProject?.path,
+    openCreateTaskModal,
     shortcutOverrides,
   ]);
 
