@@ -1219,13 +1219,16 @@ export const Header: React.FC<HeaderProps> = ({
 
   const worktreeBadge = React.useMemo(() => {
     if (!worktreeAttachment) return null;
-    return formatSessionWorktreeBadge(worktreeAttachment);
-  }, [worktreeAttachment]);
+    return formatSessionWorktreeBadge(worktreeAttachment, {
+      pending: t('gitView.empty.worktreeSetupInProgress'),
+    });
+  }, [t, worktreeAttachment]);
 
   const worktreeBadgeKind = React.useMemo(() => {
     if (!worktreeAttachment) return null;
     if (worktreeAttachment.legacy) return 'legacy';
     if (worktreeAttachment.degraded) return 'degraded';
+    if (worktreeAttachment.worktreeStatus === 'pending') return 'pending';
     if (worktreeAttachment.worktreeStatus === 'missing') return 'missing';
     if (worktreeAttachment.worktreeStatus === 'invalid') return 'invalid';
     if (worktreeAttachment.attentionReason) return 'attention';
@@ -1722,6 +1725,7 @@ export const Header: React.FC<HeaderProps> = ({
         { id: 'files', label: t('layout.mainTab.files'), icon: "folder-6" },
         { id: 'terminal', label: t('layout.mainTab.terminal'), icon: "terminal-box" },
         { id: 'context', label: t('layout.mainTab.context'), icon: "file-list-2" },
+        { id: 'diagram', label: t('layout.mainTab.diagram'), icon: 'file' },
       );
 
       return base;
