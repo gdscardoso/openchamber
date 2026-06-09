@@ -21,6 +21,7 @@ import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { useDeviceInfo } from '@/lib/device';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import type { GitHubPullRequestContextResult, GitHubPullRequestSummary, GitHubPullRequestsListResult, GitHubRepoSelector, GitProviderId, GitRemote } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
 
@@ -118,6 +119,9 @@ export function GitHubPrPickerDialog({
     const remotes = await git.getRemotes(projectDirectory).catch(() => []);
     return remotes.some((remote) => isAzureDevOpsRemote(remote)) ? 'azure-devops' : 'github';
   }, [git, projectDirectory]);
+  const directNumber = React.useMemo(() => parsePrNumber(query), [query]);
+  const debouncedQuery = useDebouncedValue(query, 350);
+  const isTextSearch = debouncedQuery.trim().length > 0 && !directNumber;
 
   const refresh = React.useCallback(async () => {
     if (!projectDirectory) {
@@ -147,7 +151,9 @@ export function GitHubPrPickerDialog({
     setIsLoading(true);
     setError(null);
     try {
-      const next = await runtime.prsList(projectDirectory, { page: 1 });
+      const next = nextProvider === 'github' && isTextSearch
+        ? await github!.prsList(projectDirectory, { page: 1, query: debouncedQuery.trim() })
+        : await runtime.prsList(projectDirectory, { page: 1 });
       setResult(next);
       setPrs(next.prs ?? []);
       setPage(next.page ?? 1);
@@ -160,7 +166,7 @@ export function GitHubPrPickerDialog({
     } finally {
       setIsLoading(false);
     }
-  }, [azureDevOps, azureDevOpsAuthChecked, azureDevOpsAuthStatus, github, githubAuthChecked, githubAuthStatus, projectDirectory, resolveProvider, tp]);
+  }, [azureDevOps, azureDevOpsAuthChecked, azureDevOpsAuthStatus, debouncedQuery, github, githubAuthChecked, githubAuthStatus, isTextSearch, projectDirectory, resolveProvider, tp]);
 
   const loadMore = React.useCallback(async () => {
     if (!projectDirectory) return;
@@ -173,7 +179,9 @@ export function GitHubPrPickerDialog({
     setIsLoadingMore(true);
     try {
       const nextPage = page + 1;
-      const next = await runtime.prsList(projectDirectory, { page: nextPage });
+      const next = provider === 'github' && isTextSearch
+        ? await github!.prsList(projectDirectory, { page: nextPage, query: debouncedQuery.trim() })
+        : await runtime.prsList(projectDirectory, { page: nextPage });
       setResult(next);
       setPrs((prev) => [...prev, ...(next.prs ?? [])]);
       setPage(next.page ?? nextPage);
@@ -184,7 +192,7 @@ export function GitHubPrPickerDialog({
     } finally {
       setIsLoadingMore(false);
     }
-  }, [azureDevOps, github, hasMore, isLoading, isLoadingMore, page, projectDirectory, provider, tp]);
+  }, [azureDevOps, debouncedQuery, github, hasMore, isLoading, isLoadingMore, isTextSearch, page, projectDirectory, provider, tp]);
 
   React.useEffect(() => {
     if (!open) {
@@ -217,22 +225,23 @@ export function GitHubPrPickerDialog({
 
   const authChecked = provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
   const connected = authChecked ? result?.connected !== false : true;
+  const visiblePrs = React.useMemo(() => {
+    if (provider !== 'azure-devops' || !query.trim() || directNumber) {
+      return prs;
+    }
+    const normalizedQuery = query.trim().toLowerCase();
+    return prs.filter((pr) => {
+      if (String(pr.number) === normalizedQuery.replace(/^#/, '')) {
+        return true;
+      }
+      return pr.title.toLowerCase().includes(normalizedQuery);
+    });
+  }, [directNumber, provider, prs, query]);
 
   const openProviderSettings = React.useCallback(() => {
     setSettingsPage('git');
     setSettingsDialogOpen(true);
   }, [setSettingsDialogOpen, setSettingsPage]);
-
-  const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return prs;
-    return prs.filter((pr) => {
-      if (String(pr.number) === q.replace(/^#/, '')) return true;
-      return pr.title.toLowerCase().includes(q);
-    });
-  }, [prs, query]);
-
-  const directNumber = React.useMemo(() => parsePrNumber(query), [query]);
 
   const attachPr = React.useCallback(async (prNumber: number, sourceRepo?: GitHubRepoSelector | null) => {
     if (!projectDirectory) {
@@ -391,11 +400,11 @@ export function GitHubPrPickerDialog({
             </div>
           ) : null}
 
-          {filtered.length === 0 && !isLoading && connected && runtime && projectDirectory ? (
+          {visiblePrs.length === 0 && !isLoading && connected && runtime && projectDirectory ? (
             <div className="text-center text-muted-foreground py-8">{query ? tp('empty.noPullRequestsFound') : tp('empty.noOpenPullRequestsFound')}</div>
           ) : null}
 
-          {filtered.map((pr) => (
+          {visiblePrs.map((pr) => (
             <div
               key={`${pr.sourceRepo?.owner ?? ''}-${pr.sourceRepo?.repo ?? ''}-${pr.number}`}
               className={cn(

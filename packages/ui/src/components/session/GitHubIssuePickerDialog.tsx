@@ -19,16 +19,15 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import * as sessionActions from '@/sync/session-actions';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useContextStore } from '@/stores/contextStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useAzureDevOpsAuthStore } from '@/stores/useAzureDevOpsAuthStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
-import { opencodeClient } from '@/lib/opencode/client';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
 import { useDeviceInfo } from '@/lib/device';
 import { createWorktreeSessionForNewBranch } from '@/lib/worktreeSessionCreator';
 import { generateBranchSlug } from '@/lib/git/branchNameGenerator';
+import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import type { GitHubIssue, GitHubIssueComment, GitHubIssuesListResult, GitHubIssueSummary, GitHubRepoSelector, GitProviderId, GitRemote } from '@/lib/api/types';
 import { useI18n } from '@/lib/i18n';
 
@@ -134,6 +133,9 @@ export function GitHubIssuePickerDialog({
     const remotes = await git.getRemotes(projectDirectory).catch(() => []);
     return remotes.some((remote) => isAzureDevOpsRemote(remote)) ? 'azure-devops' : 'github';
   }, [git, projectDirectory]);
+  const directNumber = React.useMemo(() => parseIssueNumber(query), [query]);
+  const debouncedQuery = useDebouncedValue(query, 350);
+  const isTextSearch = debouncedQuery.trim().length > 0 && !directNumber;
 
   const refresh = React.useCallback(async () => {
     if (!projectDirectory) {
@@ -163,7 +165,9 @@ export function GitHubIssuePickerDialog({
     setIsLoading(true);
     setError(null);
     try {
-      const next = await runtime.issuesList(projectDirectory, { page: 1 });
+      const next = nextProvider === 'github' && isTextSearch
+        ? await github!.issuesList(projectDirectory, { page: 1, query: debouncedQuery.trim() })
+        : await runtime.issuesList(projectDirectory, { page: 1 });
       setResult(next);
       setIssues(next.issues ?? []);
       setPage(next.page ?? 1);
@@ -176,7 +180,7 @@ export function GitHubIssuePickerDialog({
     } finally {
       setIsLoading(false);
     }
-  }, [azureDevOps, azureDevOpsAuthChecked, azureDevOpsAuthStatus, github, githubAuthChecked, githubAuthStatus, projectDirectory, resolveProvider, tp]);
+  }, [azureDevOps, azureDevOpsAuthChecked, azureDevOpsAuthStatus, debouncedQuery, github, githubAuthChecked, githubAuthStatus, isTextSearch, projectDirectory, resolveProvider, tp]);
 
   const loadMore = React.useCallback(async () => {
     if (!projectDirectory) return;
@@ -189,7 +193,9 @@ export function GitHubIssuePickerDialog({
     setIsLoadingMore(true);
     try {
       const nextPage = page + 1;
-      const next = await runtime.issuesList(projectDirectory, { page: nextPage });
+      const next = provider === 'github' && isTextSearch
+        ? await github!.issuesList(projectDirectory, { page: nextPage, query: debouncedQuery.trim() })
+        : await runtime.issuesList(projectDirectory, { page: nextPage });
       setResult(next);
       setIssues((prev) => [...prev, ...(next.issues ?? [])]);
       setPage(next.page ?? nextPage);
@@ -200,7 +206,7 @@ export function GitHubIssuePickerDialog({
     } finally {
       setIsLoadingMore(false);
     }
-  }, [azureDevOps, github, hasMore, isLoading, isLoadingMore, page, projectDirectory, provider, tp]);
+  }, [azureDevOps, debouncedQuery, github, hasMore, isLoading, isLoadingMore, isTextSearch, page, projectDirectory, provider, tp]);
 
   React.useEffect(() => {
     if (!open) {
@@ -234,22 +240,23 @@ export function GitHubIssuePickerDialog({
   const authChecked = provider === 'azure-devops' ? azureDevOpsAuthChecked : githubAuthChecked;
   const connected = authChecked ? result?.connected !== false : true;
   const repoUrl = result?.repo?.url ?? null;
+  const visibleIssues = React.useMemo(() => {
+    if (provider !== 'azure-devops' || !query.trim() || directNumber) {
+      return issues;
+    }
+    const normalizedQuery = query.trim().toLowerCase();
+    return issues.filter((issue) => {
+      if (String(issue.number) === normalizedQuery.replace(/^#/, '')) {
+        return true;
+      }
+      return issue.title.toLowerCase().includes(normalizedQuery);
+    });
+  }, [directNumber, issues, provider, query]);
 
   const openProviderSettings = React.useCallback(() => {
     setSettingsPage('git');
     setSettingsDialogOpen(true);
   }, [setSettingsDialogOpen, setSettingsPage]);
-
-  const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return issues;
-    return issues.filter((issue) => {
-      if (String(issue.number) === q.replace(/^#/, '')) return true;
-      return issue.title.toLowerCase().includes(q);
-    });
-  }, [issues, query]);
-
-  const directNumber = React.useMemo(() => parseIssueNumber(query), [query]);
 
   const resolveDefaultAgentName = React.useCallback((): string | undefined => {
     const configState = useConfigStore.getState();
@@ -292,9 +299,9 @@ export function GitHubIssuePickerDialog({
   const resolveDefaultVariant = React.useCallback((providerID: string, modelID: string): string | undefined => {
     const configState = useConfigStore.getState();
     const settingsDefaultVariant = configState.settingsDefaultVariant;
-    if (!settingsDefaultVariant) {
-      return undefined;
-    }
+    const currentVariant = configState.currentProviderId === providerID && configState.currentModelId === modelID
+      ? configState.currentVariant
+      : undefined;
 
     const provider = configState.providers.find((p) => p.id === providerID);
     const model = provider?.models.find((m: Record<string, unknown>) => (m as { id?: string }).id === modelID) as
@@ -302,12 +309,15 @@ export function GitHubIssuePickerDialog({
       | undefined;
     const variants = model?.variants;
     if (!variants) {
-      return undefined;
+      return settingsDefaultVariant || currentVariant || undefined;
     }
-    if (!Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) {
-      return undefined;
+    if (settingsDefaultVariant && Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) {
+      return settingsDefaultVariant;
     }
-    return settingsDefaultVariant;
+    if (currentVariant && Object.prototype.hasOwnProperty.call(variants, currentVariant)) {
+      return currentVariant;
+    }
+    return undefined;
   }, []);
 
   const startSession = React.useCallback(async (issueNumber: number, sourceRepo?: GitHubRepoSelector | null) => {
@@ -428,12 +438,14 @@ export function GitHubIssuePickerDialog({
 
       const sessionTitle = `#${issue.number} ${issue.title}`.trim();
 
-      const { sessionId, sessionDirectory } = await (async () => {
+      const { sessionId } = await (async () => {
         if (createInWorktree) {
           const preferred = `issue-${issue.number}-${generateBranchSlug()}`;
           const created = await createWorktreeSessionForNewBranch(
             projectDirectory,
-            preferred
+            preferred,
+            undefined,
+            { returnAfterDirectoryCreated: true }
           );
           if (!created?.id) {
             throw new Error('Failed to create worktree session');
@@ -474,64 +486,27 @@ export function GitHubIssuePickerDialog({
 
       const variant = resolveDefaultVariant(providerID, modelID);
 
-      try {
-        useContextStore.getState().saveSessionModelSelection(sessionId, providerID, modelID);
-      } catch {
-        // ignore
-      }
-
-      if (agentName) {
-        try {
-          configState.setAgent(agentName);
-        } catch {
-          // ignore
-        }
-
-        try {
-          useContextStore.getState().saveSessionAgentSelection(sessionId, agentName);
-        } catch {
-          // ignore
-        }
-
-        try {
-          useContextStore.getState().saveAgentModelForSession(sessionId, agentName, providerID, modelID);
-        } catch {
-          // ignore
-        }
-
-        if (variant !== undefined) {
-          try {
-            configState.setCurrentVariant(variant);
-          } catch {
-            // ignore
-          }
-          try {
-            useContextStore.getState().saveAgentModelVariantForSession(sessionId, agentName, providerID, modelID, variant);
-          } catch {
-            // ignore
-          }
-        }
-      }
-
       const visiblePromptText = await renderMagicPrompt('github.issue.review.visible', {
         issue_number: String(issue.number),
       });
       const instructionsText = await renderMagicPrompt('github.issue.review.instructions');
       const contextText = buildIssueContextText({ provider, repo: issueRes.repo, issue, comments });
 
-      void opencodeClient.sendMessage({
-        id: sessionId,
+      void useSessionUIStore.getState().sendMessage(
+        visiblePromptText,
         providerID,
         modelID,
-        agent: agentName,
-        variant,
-        text: visiblePromptText,
-        additionalParts: [
+        agentName,
+        undefined,
+        undefined,
+        [
           { text: instructionsText, synthetic: true },
           { text: contextText, synthetic: true },
         ],
-        directory: sessionDirectory,
-      }).catch((e) => {
+        variant,
+        undefined,
+        { sessionId },
+      ).catch((e) => {
         const message = e instanceof Error ? e.message : String(e);
         toast.error(tp('toast.sendContextFailed'), {
           description: message,
@@ -615,11 +590,11 @@ export function GitHubIssuePickerDialog({
             </div>
           ) : null}
 
-          {filtered.length === 0 && !isLoading && connected && (provider === 'azure-devops' ? azureDevOps : github) && projectDirectory ? (
+          {visibleIssues.length === 0 && !isLoading && connected && (provider === 'azure-devops' ? azureDevOps : github) && projectDirectory ? (
             <div className="text-center text-muted-foreground py-8">{query ? tp('empty.noIssuesFound') : tp('empty.noOpenIssuesFound')}</div>
           ) : null}
 
-          {filtered.map((issue) => (
+          {visibleIssues.map((issue) => (
             <div
               key={`${issue.sourceRepo?.owner ?? ''}-${issue.sourceRepo?.repo ?? ''}-${issue.number}`}
               className={cn(
