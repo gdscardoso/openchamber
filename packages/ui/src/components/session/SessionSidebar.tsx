@@ -7,7 +7,7 @@ import { isDesktopShell } from '@/lib/desktop';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { formatDirectoryName, cn } from '@/lib/utils';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useAllLiveSessions, useAllSessionStatuses } from '@/sync/sync-context';
+import { useAllLiveSessions } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSync } from '@/sync/use-sync';
 import { useSessionPrefetch } from './sidebar/hooks/useSessionPrefetch';
@@ -59,10 +59,8 @@ import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore'
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { type SessionGroup, type SessionNode } from './sidebar/types';
 import {
-  deriveActiveNowSessions,
-  deriveLiveActiveNowSessions,
+  deriveRecentSessions,
 } from './sidebar/activitySections';
-import { useActiveNowStore } from '@/stores/useActiveNowStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import {
   compareSessionsByPinnedAndTime,
@@ -126,11 +124,15 @@ type PrIndicator = {
 const buildKnownSessionDirectories = (
   projects: Array<{ path: string }>,
   availableWorktreesByProject: Map<string, WorktreeMetadata[]>,
+  options?: { includeWorktrees?: boolean },
 ): Set<string> => {
   const directories = new Set<string>();
   for (const project of projects) {
     const normalized = normalizePath(project.path)?.toLowerCase();
     if (normalized) directories.add(normalized);
+  }
+  if (options?.includeWorktrees === false) {
+    return directories;
   }
   for (const worktrees of availableWorktreesByProject.values()) {
     for (const worktree of worktrees) {
@@ -141,11 +143,15 @@ const buildKnownSessionDirectories = (
   return directories;
 };
 
-const isKnownActiveSessionDirectory = (session: Session, knownDirectories: Set<string>): boolean => {
+const isKnownActiveSessionDirectory = (
+  session: Session,
+  knownDirectories: Set<string>,
+  options?: { allowUnknownDirectory?: boolean; allowEmptyDirectorySet?: boolean },
+): boolean => {
   if (session.time?.archived) return true;
   const directory = normalizePath(resolveGlobalSessionDirectory(session))?.toLowerCase();
-  if (!directory) return true;
-  if (knownDirectories.size === 0) return true;
+  if (!directory) return options?.allowUnknownDirectory ?? true;
+  if (knownDirectories.size === 0) return options?.allowEmptyDirectorySet ?? true;
   return knownDirectories.has(directory);
 };
 
@@ -176,18 +182,13 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const [editTitle, setEditTitle] = React.useState('');
   const [editingProjectDialogId, setEditingProjectDialogId] = React.useState<string | null>(null);
   const [expandedParents, setExpandedParents] = React.useState<Set<string>>(new Set());
-  const [directoryStatus] = React.useState<Map<string, 'unknown' | 'exists' | 'missing'>>(
-    () => new Map(),
-  );
   const safeStorage = React.useMemo(() => getSafeStorage(), []);
-  const activeNowEntries = useActiveNowStore((state) => state.entries);
-  const addActiveNowSessionToStore = useActiveNowStore((state) => state.addSession);
-  const pruneActiveNowEntriesInStore = useActiveNowStore((state) => state.prune);
   const [collapsedProjects, setCollapsedProjects] = React.useState<Set<string>>(new Set());
 
   const [projectRepoStatus, setProjectRepoStatus] = React.useState<Map<string, boolean | null>>(new Map());
   const [visibleSessionCountByGroup, setVisibleSessionCountByGroup] = React.useState<Map<string, number>>(new Map());
-  const [newWorktreeDialogOpen, setNewWorktreeDialogOpen] = React.useState(false);
+  const newWorktreeDialogOpen = useUIStore((state) => state.isNewWorktreeDialogOpen);
+  const setNewWorktreeDialogOpen = useUIStore((state) => state.setNewWorktreeDialogOpen);
   const [updateDialogOpen, setUpdateDialogOpen] = React.useState(false);
   const [openSidebarMenuKey, setOpenSidebarMenuKey] = React.useState<string | null>(null);
   const [renamingFolderId, setRenamingFolderId] = React.useState<string | null>(null);
@@ -308,7 +309,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const sync = useSync();
   const liveSessions = useAllLiveSessions();
-  const liveSessionStatuses = useAllSessionStatuses();
+  const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
   const hasLoadedGlobalSessions = useGlobalSessionsStore((state) => state.hasLoaded);
   const globalActiveSessions = useGlobalSessionsStore((state) => state.activeSessions);
   const archivedSessions = useGlobalSessionsStore((state) => state.archivedSessions);
@@ -322,6 +323,16 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const worktreeMetadata = useSessionUIStore((state) => state.worktreeMetadata);
   const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
   const openNewSessionDraft = useSessionUIStore((state) => state.openNewSessionDraft);
+  // The sidebar tree's +-buttons (project / group / folder) open a draft but,
+  // unlike selecting an existing session, don't navigate. VS Code's compact view
+  // is driven by the openchamber:navigate event, so switch to chat explicitly
+  // (a no-op in the expanded side-by-side layout, which is always showing chat).
+  const openNewSessionDraftFromTree = React.useCallback<typeof openNewSessionDraft>((options) => {
+    openNewSessionDraft(options);
+    if (isVSCode) {
+      window.dispatchEvent(new CustomEvent('openchamber:navigate', { detail: { view: 'chat' } }));
+    }
+  }, [isVSCode, openNewSessionDraft]);
   const updateStore = useUpdateStore(useShallow((s) => ({
     checkForUpdates: s.checkForUpdates,
     available: s.available,
@@ -336,8 +347,8 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   })));
 
   const knownSessionDirectories = React.useMemo(
-    () => buildKnownSessionDirectories(projects, availableWorktreesByProject),
-    [availableWorktreesByProject, projects],
+    () => buildKnownSessionDirectories(projects, availableWorktreesByProject, { includeWorktrees: !isVSCode }),
+    [availableWorktreesByProject, isVSCode, projects],
   );
 
   const sessions = React.useMemo(() => {
@@ -355,8 +366,11 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       merged.push(session);
     });
 
-    return merged.filter((session) => isKnownActiveSessionDirectory(session, knownSessionDirectories));
-  }, [globalActiveSessions, knownSessionDirectories, liveSessions]);
+    return merged.filter((session) => isKnownActiveSessionDirectory(session, knownSessionDirectories, {
+      allowUnknownDirectory: !isVSCode,
+      allowEmptyDirectorySet: !isVSCode,
+    }));
+  }, [globalActiveSessions, isVSCode, knownSessionDirectories, liveSessions]);
 
   const syncSessionStructureSignature = React.useMemo(
     () => liveSessions
@@ -456,7 +470,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const isDesktopShellRuntime = React.useMemo(() => isDesktopShell(), []);
 
-  const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
   const { isTablet } = useDeviceInfo();
   const alwaysShowSidebarActions = mobileVariant || isTablet;
 
@@ -541,7 +554,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
   const openNewWorktreeDialog = React.useCallback(() => {
     setNewWorktreeDialogOpen(true);
-  }, []);
+  }, [setNewWorktreeDialogOpen]);
 
   const handleOpenUpdateDialog = React.useCallback(() => {
     const current = useUpdateStore.getState();
@@ -808,6 +821,9 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     const directories = new Set<string>();
     normalizedProjects.forEach((project) => {
       if (project.normalizedPath) directories.add(project.normalizedPath);
+      if (isVSCode) {
+        return;
+      }
       const worktrees = availableWorktreesByProject.get(project.normalizedPath) ?? [];
       worktrees.forEach((worktree) => {
         const directory = normalizePath(worktree.path);
@@ -815,7 +831,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       });
     });
     return [...directories].sort();
-  }, [availableWorktreesByProject, normalizedProjects]);
+  }, [availableWorktreesByProject, isVSCode, normalizedProjects]);
 
   const knownProjectSessionDirectoriesRef = React.useRef<Set<string> | null>(null);
   React.useEffect(() => {
@@ -823,6 +839,9 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     const previousDirectories = knownProjectSessionDirectoriesRef.current;
     knownProjectSessionDirectoriesRef.current = nextDirectories;
     if (!previousDirectories) {
+      if (isVSCode && projectSessionDirectories.length > 0) {
+        void refreshGlobalSessionsForDirectories(projectSessionDirectories, syncSessionsSnapshotRef.current);
+      }
       return;
     }
 
@@ -832,7 +851,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     }
 
     void refreshGlobalSessionsForDirectories(addedDirectories, syncSessionsSnapshotRef.current);
-  }, [projectSessionDirectories]);
+  }, [isVSCode, projectSessionDirectories]);
 
   const { git, github, azureDevOps } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
@@ -1007,65 +1026,64 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const showArchivedSessions = useSessionDisplayStore((state) => state.showArchivedSessions);
 
   const activeNowSessions = React.useMemo(() => {
-    if (!showRecentSection) {
+    if (!showRecentSection || isVSCode) {
       return [];
     }
 
-    return deriveActiveNowSessions(activeNowEntries, new Map(sessions.map((session) => [session.id, session])))
+    return deriveRecentSessions(sessions)
       .sort((a, b) => compareSessionsByPinnedAndTime(a, b, pinnedSessionIds));
-  }, [activeNowEntries, pinnedSessionIds, sessions, showRecentSection]);
-
-  const liveActiveSessions = React.useMemo(() => {
-    if (!showRecentSection) {
-      return [];
-    }
-
-    return deriveLiveActiveNowSessions(sessions, liveSessionStatuses);
-  }, [liveSessionStatuses, sessions, showRecentSection]);
-
-  React.useEffect(() => {
-    if (!showRecentSection || liveActiveSessions.length === 0) {
-      return;
-    }
-
-    liveActiveSessions.forEach((session) => addActiveNowSessionToStore(session.id));
-  }, [addActiveNowSessionToStore, liveActiveSessions, showRecentSection]);
-
-  React.useEffect(() => {
-    if (!showRecentSection) {
-      return;
-    }
-
-    const allKnownSessionsById = new Map<string, Session>();
-    [...sessions, ...archivedSessions].forEach((session) => {
-      allKnownSessionsById.set(session.id, session);
-    });
-
-    pruneActiveNowEntriesInStore(allKnownSessionsById);
-  }, [archivedSessions, pruneActiveNowEntriesInStore, sessions, showRecentSection]);
+  }, [isVSCode, pinnedSessionIds, sessions, showRecentSection]);
 
   // Prefetch is wired below, after recentSessionIds is computed.
 
   const activitySections = React.useMemo(() => {
-    if (!showRecentSection) {
+    // VS Code renders the full grouped project view (one group per open
+    // workspace, folders + pinned native); the flat "recent" activity list is
+    // web/desktop-only.
+    if (isVSCode || !showRecentSection) {
       return [];
     }
+
+    const recentSessions = activeNowSessions;
 
     const toItem = (session: Session) => {
       const existing = sessionSidebarMetaById.get(session.id);
       const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
+      const node = existing?.node ?? { session, children: [], worktree: null };
+      const filteredNodes = hasSessionSearchQuery
+        ? filterSessionNodesForSearch([node], normalizedSessionSearchQuery)
+        : [node];
+      const filteredNode = filteredNodes[0];
+      if (!filteredNode) {
+        return null;
+      }
+      const secondaryMeta = existing?.secondaryMeta
+        ? {
+            projectLabel: existing.secondaryMeta.projectLabel,
+            branchLabel: isVSCode ? null : existing.secondaryMeta.branchLabel,
+          }
+        : null;
       return {
-        node: existing?.node ?? { session, children: [], worktree: null },
+        node: filteredNode,
         projectId: existing?.projectId ?? null,
         groupDirectory: existing?.groupDirectory ?? sessionDirectory,
-        secondaryMeta: existing?.secondaryMeta ?? null,
+        secondaryMeta,
       };
     };
 
+    const items = recentSessions
+      .map(toItem)
+      .filter((item): item is NonNullable<ReturnType<typeof toItem>> => item !== null);
+
     return [
-      { key: 'active-now' as const, title: t('sessions.sidebar.activity.recentTitle'), items: activeNowSessions.map(toItem) },
+      { key: 'active-now' as const, title: t('sessions.sidebar.activity.recentTitle'), items },
     ];
-  }, [activeNowSessions, sessionSidebarMetaById, showRecentSection, t]);
+  }, [activeNowSessions, filterSessionNodesForSearch, hasSessionSearchQuery, isVSCode, normalizedSessionSearchQuery, sessionSidebarMetaById, showRecentSection, t]);
+
+  const hasActivitySectionItems = React.useMemo(
+    () => activitySections.some((section) => section.items.length > 0),
+    [activitySections],
+  );
 
 
   const recentSessionIds = React.useMemo(() => {
@@ -1257,7 +1275,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         groupDirectory={groupDirectory}
         projectId={projectId}
         archivedBucket={archivedBucket}
-        directoryStatus={directoryStatus}
         currentSessionId={currentSessionId}
         pinnedSessionIds={pinnedSessionIds}
         expandedParents={expandedParents}
@@ -1296,7 +1313,6 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       />
     ),
     [
-      directoryStatus,
       currentSessionId,
       pinnedSessionIds,
       expandedParents,
@@ -1395,7 +1411,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         setActiveProjectIdOnly={setActiveProjectIdOnly}
         setActiveMainTab={setActiveMainTab}
         setSessionSwitcherOpen={setSessionSwitcherOpen}
-        openNewSessionDraft={openNewSessionDraft}
+        openNewSessionDraft={openNewSessionDraftFromTree}
         addSessionToFolder={addSessionToFolder}
         createFolderAndStartRename={createFolderAndStartRename}
         renamingFolderId={renamingFolderId}
@@ -1432,7 +1448,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
       setActiveProjectIdOnly,
       setActiveMainTab,
       setSessionSwitcherOpen,
-      openNewSessionDraft,
+      openNewSessionDraftFromTree,
       addSessionToFolder,
       createFolderAndStartRename,
       renamingFolderId,
@@ -1444,10 +1460,11 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
     ],
   );
 
-  const topContent = showRecentSection && !isVSCode && !hasSessionSearchQuery ? (
+  const topContent = (!isVSCode && showRecentSection && !hasSessionSearchQuery) ? (
     <SidebarActivitySections
       sections={activitySections}
       renderSessionNode={renderSessionNode}
+      variant="section"
     />
   ) : null;
   const isInlineEditing = Boolean(renamingFolderId || editingId || editingProjectDialogId);
@@ -1664,6 +1681,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
 
       <SidebarProjectsList
         topContent={topContent}
+        hasSharedSessions={hasActivitySectionItems}
         sectionsForRender={sectionsForSidebarRender}
         projectSections={projectSections}
         activeProjectId={activeProjectId}
@@ -1684,7 +1702,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
         setActiveProjectIdOnly={setActiveProjectIdOnly}
         setActiveMainTab={setActiveMainTab}
         setSessionSwitcherOpen={setSessionSwitcherOpen}
-        openNewSessionDraft={openNewSessionDraft}
+        openNewSessionDraft={openNewSessionDraftFromTree}
         openNewWorktreeDialog={openNewWorktreeDialog}
         openProjectEditDialog={setEditingProjectDialogId}
         removeProject={removeProject}
